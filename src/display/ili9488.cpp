@@ -19,12 +19,6 @@ constexpr uint8_t kCmdMemoryWrite = 0x2C;
 constexpr uint8_t kCmdMadctl = 0x36;
 constexpr uint8_t kCmdPixelFormat = 0x3A;
 
-void writeRgb666(uint8_t* dst, uint16_t color) {
-  dst[0] = static_cast<uint8_t>(red6(color) << 2);
-  dst[1] = static_cast<uint8_t>(green6_from_565(color) << 2);
-  dst[2] = static_cast<uint8_t>(blue6(color) << 2);
-}
-
 }  // namespace
 
 bool Ili9488::begin() {
@@ -43,6 +37,7 @@ bool Ili9488::begin() {
   SPI.setTX(config::kDisplayMosi);
   SPI.setRX(0);
   SPI.begin();
+  spiHz_ = config::kDisplaySpiHz;
 
   reset();
   initSequence();
@@ -238,8 +233,15 @@ void Ili9488::setAddrWindow(int x, int y, int w, int h) {
 }
 
 void Ili9488::fillLine(uint16_t color, int pixels) {
+  const uint8_t r = static_cast<uint8_t>(red6(color) << 2);
+  const uint8_t g = static_cast<uint8_t>(green6_from_565(color) << 2);
+  const uint8_t b = static_cast<uint8_t>(blue6(color) << 2);
+
+  uint8_t* dst = line_;
   for (int i = 0; i < pixels; ++i) {
-    writeRgb666(&line_[i * 3], color);
+    *dst++ = r;
+    *dst++ = g;
+    *dst++ = b;
   }
 }
 
@@ -278,8 +280,12 @@ void Ili9488::flush(const Rect& rect, const uint16_t* pixels, int stride) {
 
   for (int y = 0; y < r.h; ++y) {
     const uint16_t* src = pixels + static_cast<size_t>(r.y + y) * stride + r.x;
+    uint8_t* dst = line_;
     for (int x = 0; x < r.w; ++x) {
-      writeRgb666(&line_[x * 3], src[x]);
+      const uint16_t c = src[x];
+      *dst++ = static_cast<uint8_t>(red6(c) << 2);
+      *dst++ = static_cast<uint8_t>(green6_from_565(c) << 2);
+      *dst++ = static_cast<uint8_t>(blue6(c) << 2);
     }
     SPI.transfer(line_, nullptr, static_cast<size_t>(r.w * 3));
     if ((y & 0x0F) == 0) {

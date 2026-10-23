@@ -102,7 +102,11 @@ void drawDiagnostics() {
     }
   }
 
-  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 292}, "SPI 27 MHz", kYellow, 2);
+  char spiText[24];
+  std::snprintf(spiText, sizeof(spiText), "SPI %lu MHz",
+                static_cast<unsigned long>(paint::config::kDisplaySpiHz / 1000000UL));
+  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 292}, spiText, kYellow, 2);
+
   char heapText[32];
   std::snprintf(heapText, sizeof(heapText), "heap %lu",
                 static_cast<unsigned long>(rp2040.getFreeHeap()));

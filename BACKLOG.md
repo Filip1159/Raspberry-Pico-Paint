@@ -38,9 +38,9 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - M1 skeleton is in place and **hardware-verified on 2026-10-24**: serial banner, LittleFS `total=2097152 used=8192 free=2088960`, free heap 452,472 B. The onboard backlight driver is confirmed: `LED` tied to 3V3 through 10k lights the panel.
 - M2 implementation is in place: ILI9488 init/rotation/address-window driver, RGB565→RGB666 line-buffer flush, `gfx` primitives (rect, hline/vline, line, circle, text, blit), 5×7 font, dirty-region helper, diagnostics screen and benchmarks.
 - Builds verified on 2026-10-24:
-  - `pico2w_usb`: **SUCCESS** — RAM 72,168 B (13.8%), flash 332,544 B (15.9%)
-  - `pico2w_ota`: **SUCCESS** — RAM 72,168 B, flash 332,544 B
-  - `pico2w_diag`: **SUCCESS** — RAM 72,168 B, flash 332,952 B
+  - `pico2w_usb`: **SUCCESS** — RAM 72,168 B (13.8%), flash 332,608 B (15.9%)
+  - `pico2w_ota`: **SUCCESS** — RAM 72,168 B, flash 332,608 B
+  - `pico2w_diag`: **SUCCESS** — RAM 72,168 B, flash 333,008 B
 - Native tests pass under WSL g++ (8/8, including the dirty-region test). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
 - M2 on-device validation is the active task: colours, orientation, text, benchmark timings and post-framebuffer heap.
 - Git repository initialized (`main`); M1 is committed, M2 changes are pending a commit.
@@ -316,9 +316,9 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 - [x] M2-6 Build the diagnostics screen: colour bars, grey ramp, checkerboard, orientation test, text sample. *Implemented in `src/main.cpp`; orientation test is the portrait title/geometry plus the rotation API.*
 - [x] M2-7 Benchmark: full screen, 64×64 rect, 432 px line; log ms per operation. *Implemented in `pico2w_diag`; on-device numbers pending.*
 - [ ] M2-8 Measure free heap with and without a Wi-Fi prototype; record the memory decision (§5.3). Re-check the gate in M7. *Without Wi-Fi: 143,360 B free after the 307,200 B framebuffer; Wi-Fi measurement waits for M7.*
-- [ ] M2-9 Tune SPI clock: 27 → 40 → optionally 62.5 MHz; keep the fastest stable value. *27 MHz verified: full-screen framebuffer flush 200.8 ms. At 40 MHz the transfer portion should drop to ~92 ms; test next.*
+- [ ] M2-9 Tune SPI clock: 27 → 40 → optionally 62.5 MHz; keep the fastest stable value. *27 MHz verified: full-screen framebuffer flush 200.8 ms before conversion-loop optimization. The 40 MHz build is ready for on-device validation; theoretical payload is 92.2 ms.*
 
-**Acceptance:** correct colours and orientation; no tearing/offset; full-screen fill ≤150 ms at 40 MHz; text legible; benchmark numbers recorded in `docs/performance.md`. *Colours, orientation (180° corrected via rotation 2), offset and clipping verified on 2026-10-24. 27 MHz full-screen flush is 200.8 ms; 40 MHz tuning is the remaining acceptance item.*
+**Acceptance:** correct colours and orientation; no tearing/offset; full-screen fill ≤150 ms at 40 MHz; text legible; benchmark numbers recorded in `docs/performance.md`. *Colours, orientation (180° corrected via rotation 2), offset and clipping verified on 2026-10-24. 27 MHz full-screen flush was 200.8 ms before optimization; 40 MHz validation is the remaining acceptance item.*
 
 **Risk note:** this is the highest technical risk. If the panel shows colour or init problems, compare against a known-good ILI9488 init sequence before building UI on top.
 

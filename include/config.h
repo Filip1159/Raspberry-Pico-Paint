@@ -42,8 +42,9 @@ constexpr uint8_t kDisplayMosi = 19;
 constexpr uint8_t kDisplaySck = 18;
 constexpr uint8_t kBacklightPin = 21;
 
-// Start conservatively; raise after the panel is proven on the bench.
-constexpr uint32_t kDisplaySpiHz = 27000000;
+// 27 MHz was clean on the bench; 40 MHz is the M2 target. Fall back to
+// 27 MHz if the panel shows corruption with the current wiring.
+constexpr uint32_t kDisplaySpiHz = 40000000;
 
 // The module is mounted 180 degrees from the panel's native portrait view.
 // Rotation 2 is the normal upright portrait orientation for this build.

@@ -10,8 +10,9 @@ Milestone **M1** is hardware-verified (serial banner, 2 MB LittleFS, free heap).
 Milestone **M2** — ILI9488 driver, RGB565→RGB666 flush, graphics primitives and
 the diagnostics screen — is hardware-verified for colour, orientation and
 geometry. The panel is mounted 180° from its native portrait view, so the
-default is rotation 2. SPI tuning (27 → 40 MHz) is the remaining M2 item. The
-paint engine and UI land in M3–M6; OTA lands in M7. See
+default is rotation 2. The firmware now runs SPI at the 40 MHz target; on-device
+validation of that clock is the remaining M2 item. The paint engine and UI land
+in M3–M6; OTA lands in M7. See
 [`BACKLOG.md`](BACKLOG.md) for the full plan and
 [`docs/performance.md`](docs/performance.md) for benchmark results.
 

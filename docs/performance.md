@@ -6,9 +6,9 @@ Measured 2026-10-24 with the pinned RP2350 platform:
 
 | Environment | RAM | Flash |
 |---|---:|---:|
-| `pico2w_usb` | 72,168 B (13.8%) | 332,544 B (15.9%) |
-| `pico2w_ota` | 72,168 B (13.8%) | 332,544 B (15.9%) |
-| `pico2w_diag` | 72,168 B (13.8%) | 332,952 B (15.9%) |
+| `pico2w_usb` | 72,168 B (13.8%) | 332,608 B (15.9%) |
+| `pico2w_ota` | 72,168 B (13.8%) | 332,608 B (15.9%) |
+| `pico2w_diag` | 72,168 B (13.8%) | 333,008 B (15.9%) |
 
 The 320×480 RGB565 framebuffer is allocated from the heap at boot
 (307,200 B). The M1 firmware reported 452,472 B free before that allocation.
@@ -34,16 +34,17 @@ The firmware prints these lines at boot:
 [disp] diagnostics flush: ... us
 ```
 
-At the initial conservative SPI clock of **27 MHz**, the theoretical payload
-time for a full 320×480 RGB666 frame is:
+The firmware now runs the display at the M2 target clock of **40 MHz**. The
+theoretical payload time for a full 320×480 RGB666 frame is:
 
 ```
-320 * 480 * 3 bytes / 27,000,000 bit/s = 136.5 ms
+320 * 480 * 3 bytes / 40,000,000 bit/s = 92.2 ms
 ```
 
-The measured value includes per-row conversion and transfer overhead. The M2
-acceptance target is **≤150 ms at 40 MHz**; the 27 MHz measurement is the
-baseline before tuning.
+At the initial 27 MHz clock it was 136.5 ms. The measured value includes
+per-row conversion and transfer overhead. The 27 MHz measurement below is the
+baseline taken before the conversion loop was changed from a per-pixel helper
+call to a direct pointer write; the 40 MHz result is still pending.
 
 | Measurement | 27 MHz | 40 MHz | Target |
 |---|---:|---:|---:|
@@ -54,11 +55,11 @@ baseline before tuning.
 | Diagnostics frame flush | **200.8 ms** | pending | — |
 | Free heap after framebuffer | **143,360 B** | — | ≥24 KB after Wi-Fi |
 
-The 27 MHz value is from `[disp] diagnostics flush: 200792 us` on 2026-10-24.
-The `pico2w_usb` build shows the diagnostics screen but does not print the
-separate `[bench]` lines; flash `pico2w_diag` to collect those. The 200.8 ms
-measurement is a full-screen framebuffer flush, so it is the relevant number
-for the ≤150 ms at 40 MHz acceptance target.
+The 27 MHz value is from `[disp] diagnostics flush: 200792 us` on 2026-10-24,
+before the conversion-loop optimization. The `pico2w_usb` build shows the
+diagnostics screen but does not print the separate `[bench]` lines; flash
+`pico2w_diag` to collect those. A full-screen framebuffer flush is the relevant
+number for the ≤150 ms at 40 MHz acceptance target.
 
 Keep the fastest stable SPI clock in `include/config.h` (`kDisplaySpiHz`); if
 40 MHz shows corruption, fall back to 27 MHz and note it here.
