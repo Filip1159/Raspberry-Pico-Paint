@@ -84,42 +84,50 @@ static void test_dirty_region_merges_and_clears() {
   TEST_ASSERT_TRUE(dirty.empty());
 }
 
-static void test_touch_calibration_corners() {
-  const Calibration cal =
-      makeAxisCalibration(281, 3854, 3791, 300, 0, 319, 0, 479);
+static Calibration panelCalibration() {
+  const CalibrationPoint points[4] = {
+      {301, 3795, 0, 0},      // top-left
+      {260, 298, 319, 0},     // top-right
+      {3862, 3787, 0, 479},   // bottom-left
+      {3845, 301, 319, 479},  // bottom-right
+  };
+  return makeFourPointCalibration(points);
+}
 
-  Point p = applyCalibration(cal, 281, 3791);
+static void test_touch_calibration_corners() {
+  const Calibration cal = panelCalibration();
+
+  Point p = applyCalibration(cal, 301, 3795);
   TEST_ASSERT_INT16_WITHIN(1, 0, p.x);
   TEST_ASSERT_INT16_WITHIN(1, 0, p.y);
 
-  p = applyCalibration(cal, 3854, 3791);
+  p = applyCalibration(cal, 260, 298);
   TEST_ASSERT_INT16_WITHIN(1, 319, p.x);
   TEST_ASSERT_INT16_WITHIN(1, 0, p.y);
 
-  p = applyCalibration(cal, 281, 300);
+  p = applyCalibration(cal, 3862, 3787);
   TEST_ASSERT_INT16_WITHIN(1, 0, p.x);
   TEST_ASSERT_INT16_WITHIN(1, 479, p.y);
 
-  p = applyCalibration(cal, 3854, 300);
+  p = applyCalibration(cal, 3845, 301);
   TEST_ASSERT_INT16_WITHIN(1, 319, p.x);
   TEST_ASSERT_INT16_WITHIN(1, 479, p.y);
 }
 
 static void test_touch_calibration_center_and_clamp() {
-  const Calibration cal =
-      makeAxisCalibration(281, 3854, 3791, 300, 0, 319, 0, 479);
+  const Calibration cal = panelCalibration();
 
   Point p = applyCalibration(cal, 2067, 2045);
   TEST_ASSERT_INT16_WITHIN(2, 159, p.x);
   TEST_ASSERT_INT16_WITHIN(2, 239, p.y);
 
   p = applyCalibration(cal, 0, 0);
-  TEST_ASSERT_EQUAL_INT(0, p.x);
-  TEST_ASSERT_EQUAL_INT(479, p.y);
-
-  p = applyCalibration(cal, 4095, 4095);
   TEST_ASSERT_EQUAL_INT(319, p.x);
   TEST_ASSERT_EQUAL_INT(0, p.y);
+
+  p = applyCalibration(cal, 4095, 4095);
+  TEST_ASSERT_EQUAL_INT(0, p.x);
+  TEST_ASSERT_EQUAL_INT(479, p.y);
 }
 
 int main(int, char**) {

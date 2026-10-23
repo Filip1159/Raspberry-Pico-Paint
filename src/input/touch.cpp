@@ -46,10 +46,17 @@ bool Xpt2046Touch::begin() {
   SPI1.setRX(config::kTouchMiso);
   SPI1.begin();
 
-  // 4-point samples from the 4" panel on 2026-10-24. Raw X increases to the
-  // right; raw Y decreases toward the bottom of the portrait view.
-  cal_ = makeAxisCalibration(281, 3854, 3791, 300, 0, config::kScreenWidth - 1,
-                             0, config::kScreenHeight - 1);
+  // 4-point samples from the 4" panel on 2026-10-24. The touch axes are
+  // rotated 90 degrees relative to the display: raw X increases from the top
+  // edge to the bottom edge, and raw Y decreases from left to right.
+  const CalibrationPoint kDefaultPoints[4] = {
+      {301, 3795, 0, 0},  // top-left
+      {260, 298, config::kScreenWidth - 1, 0},  // top-right
+      {3862, 3787, 0, config::kScreenHeight - 1},  // bottom-left
+      {3845, 301, config::kScreenWidth - 1,
+       config::kScreenHeight - 1},  // bottom-right
+  };
+  cal_ = makeFourPointCalibration(kDefaultPoints);
 
   return true;
 }
