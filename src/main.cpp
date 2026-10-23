@@ -9,6 +9,7 @@
 #include "display/gfx.h"
 #include "display/ili9488.h"
 #include "input/touch.h"
+#include "input/touch_state.h"
 #include "paint/color.h"
 #include "version.h"
 
@@ -24,6 +25,7 @@ const paint::Rect kScreenRect = {0, 0, kFbWidth, kFbHeight};
 paint::Ili9488 gDisplay;
 paint::DirtyRegion gDirty;
 paint::Xpt2046Touch gTouch;
+paint::TouchStateMachine gTouchState;
 uint16_t* gFramebuffer = nullptr;
 
 void printBanner() {
@@ -234,28 +236,49 @@ void loop() {
                   static_cast<unsigned>(rp2040.getFreeHeap()));
   }
 
-  if (now - lastTouchPoll >= 10) {
+  if (now - lastTouchPoll >= paint::config::kTouchPollMs) {
     lastTouchPoll = now;
     paint::TouchRaw raw;
     paint::TouchPoint point;
     if (gTouch.read(point, raw)) {
-      const uint32_t interval = raw.pressed ? 100 : 1000;
+      const paint::TouchFrame frame = gTouchState.update(point, now);
+
+      if (frame.down) {
+        Serial.printf("[touch] down x=%d y=%d\n", frame.x, frame.y);
+      }
+      if (frame.move) {
+        Serial.printf("[touch] move x=%d y=%d\n", frame.x, frame.y);
+      }
+      if (frame.longPress) {
+        Serial.printf("[touch] long-press x=%d y=%d\n", frame.x, frame.y);
+      }
+      if (frame.up) {
+        Serial.printf("[touch] up x=%d y=%d duration=%lu ms tap=%d\n",
+                      frame.x, frame.y,
+                      static_cast<unsigned long>(frame.durationMs),
+                      frame.tap ? 1 : 0);
+      }
+      if (frame.tap) {
+        Serial.printf("[touch] tap x=%d y=%d\n", frame.x, frame.y);
+      }
+
+      const uint32_t interval = frame.pressed ? 250 : 1000;
       if (now - lastTouchPrint >= interval) {
         lastTouchPrint = now;
         Serial.printf("[touch] raw=%u,%u z=%u mapped=%d,%d pressed=%d\n",
                       static_cast<unsigned>(raw.x),
                       static_cast<unsigned>(raw.y),
                       static_cast<unsigned>(raw.z),
-                      static_cast<int>(point.x),
-                      static_cast<int>(point.y),
+                      static_cast<int>(frame.x),
+                      static_cast<int>(frame.y),
                       raw.pressed ? 1 : 0);
       }
 
-      if (point.pressed) {
+      if (frame.pressed && (frame.down || frame.move)) {
         // Temporary visual check until the M3 UI shell replaces the
         // diagnostics screen: a red crosshair follows the calibrated touch.
-        const int16_t mx = point.x;
-        const int16_t my = point.y;
+        const int16_t mx = frame.x;
+        const int16_t my = frame.y;
         paint::gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect,
                              {static_cast<int16_t>(mx - 4), my, 9, 1}, paint::kRed);
         paint::gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect,

@@ -1,7 +1,7 @@
 # Pico Paint — Backlog & Implementation Plan
 
 **Target hardware:** Raspberry Pi Pico 2 W (RP2350, 4 MB flash, 520 KB SRAM) + 4" 480×320 ILI9488 SPI TFT (used in **portrait 320×480**) with **HR2046 / XPT2046-compatible** resistive touch
-**Status:** M1 and M2 hardware-verified; M3 touch calibrated, touch state machine next
+**Status:** M1 and M2 hardware-verified; M3 touch state machine implemented, UI shell next
 **Last updated:** 2026-10-24
 
 ---
@@ -38,16 +38,17 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - M1 skeleton is in place and **hardware-verified on 2026-10-24**: serial banner, LittleFS `total=2097152 used=8192 free=2088960`, free heap 452,472 B. The onboard backlight driver is confirmed: `LED` tied to 3V3 through 10k lights the panel.
 - M2 implementation is in place: ILI9488 init/rotation/address-window driver, RGB565→RGB666 line-buffer flush, `gfx` primitives (rect, hline/vline, line, circle, text, blit), 5×7 font, dirty-region helper, diagnostics screen and benchmarks.
 - Builds verified on 2026-10-24:
-  - `pico2w_usb`: **SUCCESS** — RAM 72,520 B (13.8%), flash 335,784 B (16.0%)
-  - `pico2w_ota`: **SUCCESS** — RAM 72,520 B, flash 335,784 B
-  - `pico2w_diag`: **SUCCESS** — RAM 72,520 B, flash 336,184 B (16.1%)
-- Native tests pass under WSL g++ (10/10, including the dirty-region and touch-calibration tests). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
+  - `pico2w_usb`: **SUCCESS** — RAM 72,548 B (13.8%), flash 336,392 B (16.1%)
+  - `pico2w_ota`: **SUCCESS** — RAM 72,548 B, flash 336,392 B
+  - `pico2w_diag`: **SUCCESS** — RAM 72,548 B, flash 336,792 B (16.1%)
+- Native tests pass under WSL g++ (15/15, including the dirty-region, touch-calibration and touch-state tests). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
 - M2 is hardware-verified: correct colours, upright portrait at rotation 2, no offset/clipping, stable 40 MHz SPI, 139.3 ms full-screen flush, 143,360 B free heap after the framebuffer.
 - M3-1 is hardware-validated: the HR2046 responds on SPI1 at all four corners. Raw ranges are roughly X 260–3880 and Y 298–3807. `pico2w_usb` prints raw and calibrated `[touch]` samples and draws a red crosshair at the mapped point.
 - M3-2 calibration is implemented as a full Q16.16 affine least-squares fit from four corner samples. The panel's raw axes are rotated 90° relative to the display (raw X top→bottom, raw Y left→right), so the transform includes cross terms; all four corners map within ~1 px. Persistence in `/config.bin` and the guided calibration screen (M3-8) remain.
+- M3-3 touch state machine is implemented: two-sample press/release debounce, 2 px move threshold, tap detection (≤10 px travel), one-shot 600 ms long-press, and a frame structure for the UI. The diagnostics build prints `down`, `move`, `up`, `tap` and `long-press` events.
 - Git repository initialized (`main`); M1, M2 and the M3 touch driver are committed.
 
-**Next action:** flash `pico2w_usb`, confirm the mapped corner values (top-left 0,0; top-right 319,0; bottom-left 0,479; bottom-right 319,479) and that the red crosshair follows the finger. Then implement the touch state machine (M3-3) and the immediate-mode UI shell (M3-4…M3-6).
+**Next action:** flash `pico2w_usb`, confirm the `[touch] down/move/up/tap/long-press` event lines and the crosshair, then implement the immediate-mode UI core (M3-4) and the canvas shell (M3-6).
 
 ---
 
@@ -332,7 +333,7 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 
 - [x] M3-1 Implement `ITouch`; `Xpt2046Touch` on SPI1 at ~2 MHz (mode 0), median-of-3 + EMA filtering. *Implemented with pipelined Z1/Z2/X/Y reads, pressure threshold and EMA. Hardware-validated on 2026-10-24 at all four corners.*
 - [ ] M3-2 Implement 4-point calibration; solve and store a 6-coefficient affine transform (Q16.16) in `/config.bin`. *Full Q16.16 affine least-squares fit from four corners is implemented and maps all corners within ~1 px. Persistence and guided capture remain.*
-- [ ] M3-3 Implement the touch state machine: down / move / up, movement threshold, long-press, tap.
+- [x] M3-3 Implement the touch state machine: down / move / up, movement threshold, long-press, tap. *Implemented with debounce, 2 px move threshold, tap detection, one-shot long-press and native tests.*
 - [ ] M3-4 Build the immediate-mode UI core: layout, buttons, toggles, sliders, modal sheet, toast, hit testing.
 - [ ] M3-5 Add icons and the 5×7 font assets; establish a consistent 44×44 px minimum touch target.
 - [ ] M3-6 Implement screens: splash, canvas shell (top bar + blank canvas), menu sheet, placeholder gallery/settings.

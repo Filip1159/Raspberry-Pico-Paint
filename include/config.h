@@ -61,6 +61,14 @@ constexpr uint8_t kTouchCs = 13;
 constexpr uint8_t kTouchIrq = 14;
 constexpr uint32_t kTouchSpiHz = 2'000'000;
 
+// Gesture recognition. The touch driver already applies median + EMA
+// filtering; these thresholds suppress the remaining finger jitter.
+constexpr uint32_t kTouchPollMs = 10;
+constexpr int kTouchMoveThreshold = 2;   // px before a move event is emitted
+constexpr int kTouchTapMaxMove = 10;     // px of total travel still counted as a tap
+constexpr uint32_t kTouchLongPressMs = 600;
+constexpr uint8_t kTouchDebounceSamples = 2;
+
 // ---------------------------------------------------------------------------
 // Painting / memory
 // ---------------------------------------------------------------------------

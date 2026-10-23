@@ -11,8 +11,8 @@ Milestone **M2** — ILI9488 driver, RGB565→RGB666 flush, graphics primitives 
 the diagnostics screen — is hardware-verified: correct colours, upright portrait
 (rotation 2), stable 40 MHz SPI and a 139.3 ms full-screen flush. Milestone **M3**
 (touch input and UI shell) is in progress: the XPT2046/HR2046 driver is
-hardware-validated, and a 4-point affine calibration plus a temporary touch
-crosshair are implemented. The touch state machine and UI shell are next. The paint
+hardware-validated, and a 4-point affine calibration, touch state machine and
+temporary touch crosshair are implemented. The UI shell is next. The paint
 engine and UI land in M3–M6; OTA lands in M7. See
 [`BACKLOG.md`](BACKLOG.md) for the full plan and
 [`docs/performance.md`](docs/performance.md) for benchmark results.
@@ -82,10 +82,20 @@ prints raw samples over serial:
 ```
 
 When the panel is pressed it prints more often and draws a red crosshair at the
-mapped screen position. The calibration uses four corner samples in this order:
-top-left, top-right, bottom-left, bottom-right. The raw touch axes are rotated
-90° relative to the display, so the affine transform includes cross terms.
-Expected mapped corners are `(0,0)`, `(319,0)`, `(0,479)` and `(319,479)`.
+mapped screen position. The gesture layer emits debounced events:
+
+```text
+[touch] down x=... y=...
+[touch] move x=... y=...
+[touch] up x=... y=... duration=... ms tap=1
+[touch] tap x=... y=...
+[touch] long-press x=... y=...
+```
+
+The calibration uses four corner samples in this order: top-left, top-right,
+bottom-left, bottom-right. The raw touch axes are rotated 90° relative to the
+display, so the affine transform includes cross terms. Expected mapped corners
+are `(0,0)`, `(319,0)`, `(0,479)` and `(319,479)`.
 
 ## OTA updates
 

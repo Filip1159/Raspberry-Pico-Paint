@@ -3,6 +3,7 @@
 #include "config.h"
 #include "display/dirty.h"
 #include "input/calibration.h"
+#include "input/touch_state.h"
 #include "paint/color.h"
 #include "paint/geometry.h"
 
@@ -130,6 +131,139 @@ static void test_touch_calibration_center_and_clamp() {
   TEST_ASSERT_EQUAL_INT(479, p.y);
 }
 
+static TouchPoint touchSample(int16_t x, int16_t y, bool pressed) {
+  return TouchPoint{x, y, pressed};
+}
+
+static void test_touch_state_debounce_and_tap() {
+  TouchStateMachine sm;
+
+  TouchFrame f = sm.update(touchSample(10, 10, true), 0);
+  TEST_ASSERT_FALSE(f.down);
+
+  f = sm.update(touchSample(10, 10, true), 10);
+  TEST_ASSERT_TRUE(f.down);
+  TEST_ASSERT_TRUE(f.pressed);
+  TEST_ASSERT_EQUAL_INT(10, f.x);
+  TEST_ASSERT_EQUAL_INT(10, f.y);
+
+  f = sm.update(touchSample(0, 0, false), 20);
+  TEST_ASSERT_FALSE(f.up);
+  TEST_ASSERT_TRUE(f.pressed);
+
+  f = sm.update(touchSample(0, 0, false), 30);
+  TEST_ASSERT_TRUE(f.up);
+  TEST_ASSERT_TRUE(f.tap);
+  TEST_ASSERT_FALSE(f.pressed);
+  TEST_ASSERT_EQUAL_INT(10, f.x);
+  TEST_ASSERT_EQUAL_INT(10, f.y);
+  TEST_ASSERT_EQUAL_UINT32(20, f.durationMs);
+
+  f = sm.update(touchSample(0, 0, false), 40);
+  TEST_ASSERT_FALSE(f.up);
+  TEST_ASSERT_FALSE(f.tap);
+
+  f = sm.update(touchSample(20, 20, true), 50);
+  TEST_ASSERT_FALSE(f.down);
+  f = sm.update(touchSample(20, 20, true), 60);
+  TEST_ASSERT_TRUE(f.down);
+  f = sm.update(touchSample(0, 0, false), 70);
+  TEST_ASSERT_FALSE(f.up);
+  f = sm.update(touchSample(0, 0, false), 80);
+  TEST_ASSERT_TRUE(f.up);
+  TEST_ASSERT_TRUE(f.tap);
+}
+
+static void test_touch_state_move_threshold() {
+  TouchStateMachine sm;
+
+  sm.update(touchSample(10, 10, true), 0);
+  TouchFrame f = sm.update(touchSample(10, 10, true), 10);
+  TEST_ASSERT_TRUE(f.down);
+
+  f = sm.update(touchSample(11, 10, true), 20);
+  TEST_ASSERT_FALSE(f.move);
+
+  f = sm.update(touchSample(12, 10, true), 30);
+  TEST_ASSERT_TRUE(f.move);
+  TEST_ASSERT_EQUAL_INT(12, f.x);
+
+  f = sm.update(touchSample(30, 10, true), 40);
+  TEST_ASSERT_TRUE(f.move);
+
+  f = sm.update(touchSample(0, 0, false), 50);
+  TEST_ASSERT_FALSE(f.up);
+  f = sm.update(touchSample(0, 0, false), 60);
+  TEST_ASSERT_TRUE(f.up);
+  TEST_ASSERT_FALSE(f.tap);
+}
+
+static void test_touch_state_long_press() {
+  TouchStateMachine sm;
+
+  sm.update(touchSample(50, 50, true), 0);
+  TouchFrame f = sm.update(touchSample(50, 50, true), 10);
+  TEST_ASSERT_TRUE(f.down);
+
+  f = sm.update(touchSample(50, 50, true), 609);
+  TEST_ASSERT_FALSE(f.longPress);
+
+  f = sm.update(touchSample(50, 50, true), 610);
+  TEST_ASSERT_TRUE(f.longPress);
+
+  f = sm.update(touchSample(50, 50, true), 620);
+  TEST_ASSERT_FALSE(f.longPress);
+
+  f = sm.update(touchSample(0, 0, false), 630);
+  TEST_ASSERT_FALSE(f.up);
+  f = sm.update(touchSample(0, 0, false), 640);
+  TEST_ASSERT_TRUE(f.up);
+  TEST_ASSERT_FALSE(f.tap);
+  TEST_ASSERT_EQUAL_UINT32(630, f.durationMs);
+}
+
+static void test_touch_state_drag_cancels_long_press() {
+  TouchStateMachine sm;
+
+  sm.update(touchSample(50, 50, true), 0);
+  sm.update(touchSample(50, 50, true), 10);
+
+  TouchFrame f = sm.update(touchSample(80, 50, true), 20);
+  TEST_ASSERT_TRUE(f.move);
+
+  f = sm.update(touchSample(80, 50, true), 700);
+  TEST_ASSERT_FALSE(f.longPress);
+
+  f = sm.update(touchSample(0, 0, false), 710);
+  TEST_ASSERT_FALSE(f.up);
+  f = sm.update(touchSample(0, 0, false), 720);
+  TEST_ASSERT_TRUE(f.up);
+  TEST_ASSERT_FALSE(f.tap);
+}
+
+static void test_touch_state_release_debounce() {
+  TouchStateMachine sm;
+
+  sm.update(touchSample(20, 20, true), 0);
+  sm.update(touchSample(20, 20, true), 10);
+
+  TouchFrame f = sm.update(touchSample(0, 0, false), 20);
+  TEST_ASSERT_FALSE(f.up);
+  TEST_ASSERT_TRUE(f.pressed);
+
+  f = sm.update(touchSample(20, 20, true), 30);
+  TEST_ASSERT_FALSE(f.up);
+  TEST_ASSERT_TRUE(f.pressed);
+
+  f = sm.update(touchSample(0, 0, false), 40);
+  TEST_ASSERT_FALSE(f.up);
+  TEST_ASSERT_TRUE(f.pressed);
+
+  f = sm.update(touchSample(0, 0, false), 50);
+  TEST_ASSERT_TRUE(f.up);
+  TEST_ASSERT_TRUE(f.tap);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_rgb565_primaries);
@@ -142,5 +276,10 @@ int main(int, char**) {
   RUN_TEST(test_dirty_region_merges_and_clears);
   RUN_TEST(test_touch_calibration_corners);
   RUN_TEST(test_touch_calibration_center_and_clamp);
+  RUN_TEST(test_touch_state_debounce_and_tap);
+  RUN_TEST(test_touch_state_move_threshold);
+  RUN_TEST(test_touch_state_long_press);
+  RUN_TEST(test_touch_state_drag_cancels_long_press);
+  RUN_TEST(test_touch_state_release_debounce);
   return UNITY_END();
 }
