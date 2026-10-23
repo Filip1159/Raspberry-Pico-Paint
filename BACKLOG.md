@@ -288,7 +288,7 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 - [ ] M1-2 Add `board_build.filesystem_size = 2m`; verify LittleFS reports the expected size. *Build reports 2 MB; on-device mount pending.*
 - [x] M1-3 Add environments:
   - `pico2w_usb` — normal USB upload (`upload_protocol = picotool`)
-  - `pico2w_ota` — `upload_protocol = espota`, `upload_port = ${sysenv.PAINT_OTA_IP}`, `upload_flags = --auth=${sysenv.PAINT_OTA_PASSWORD}`
+  - `pico2w_ota` — `upload_protocol = espota`, `upload_port = ${sysenv.PAINT_OTA_IP}`, `upload_flags = --port=2040 --auth=${sysenv.PAINT_OTA_PASSWORD}`
   - `native` — host unit tests, `test_framework = unity`
   - `pico2w_diag` — optional hardware diagnostics build
 - [x] M1-4 Add `include/config.h` (pins, dimensions, limits) and `include/version.h` (`PAINT_VERSION`, build timestamp).
@@ -525,7 +525,7 @@ upload_protocol = picotool
 extends = env:pico2w_usb
 upload_protocol = espota
 upload_port = ${sysenv.PAINT_OTA_IP}
-upload_flags = --auth=${sysenv.PAINT_OTA_PASSWORD}
+upload_flags = --port=2040 --auth=${sysenv.PAINT_OTA_PASSWORD}
 
 [env:native]
 platform = native

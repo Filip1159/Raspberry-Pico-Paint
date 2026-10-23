@@ -40,7 +40,7 @@ The device IP is printed on the serial monitor and shown in the Wi-Fi & OTA scre
 
 `upload_port` can also be `pico-paint.local` if mDNS works on your network. An IP is more reliable on Windows.
 
-If the uploader uses the wrong port, add `--port=2040` to `upload_flags` in `platformio.ini`.
+The environment passes `--port=2040` because ArduinoOTA listens on 2040, while PlatformIO's `espota` defaults to 3232. Keep that flag.
 
 ## Safety rules
 
