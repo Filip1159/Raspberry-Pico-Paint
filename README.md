@@ -16,7 +16,7 @@ Milestone **M1** — project skeleton, build environments, versioning and CI. Th
 | Display | 4.0" TFT SPI 480×320 V1.0, ILI9488, 14-pin header (`KMRTM40045-SPI`) |
 | Touch | HR2046 (XPT2046-compatible) resistive, separate SPI bus |
 | Storage | Internal LittleFS (2 MB partition) |
-| Backlight | GP21 via MOSFET + PWM |
+| Backlight | GP21 → module `LED` control input (onboard driver), PWM |
 
 Full pin map, power notes and the ILI9488 MISO warning: [`docs/wiring.md`](docs/wiring.md).
 

@@ -22,7 +22,7 @@ Photo: [`../20261023_225325.jpg`](../20261023_225325.jpg)
 | Display MOSI | GP19 | SDI | SPI0 TX |
 | Display SCK | GP18 | SCK | SPI0 SCK |
 | Display MISO | — | SDO(MISO) | **Not connected** |
-| Backlight | GP21 | LED | MOSFET switch + PWM; polarity depends on module |
+| Backlight | GP21 | LED | High-level control input; module has an onboard backlight transistor |
 | Touch SCK | GP10 | T_CLK | SPI1 SCK |
 | Touch MOSI | GP11 | T_DIN | SPI1 TX |
 | Touch MISO | GP12 | T_OUT | SPI1 RX; touch data out |
@@ -39,17 +39,33 @@ The ILI9488's SDO/MISO output does not tri-state reliably when CS is high. Shari
 ## Power and backlight
 
 - Run the panel at 3.3 V. If the module has a 5 V regulator, still use 3.3 V logic.
-- Measure the backlight current before connecting it. Identify the LED pin polarity:
-  - `LED` is the anode → use a high-side P-MOSFET (or a dedicated backlight driver).
-  - `LED` is the cathode → a low-side N-MOSFET works.
-- PWM the MOSFET gate at 1–2 kHz for dimming. Never drive the backlight directly from a GPIO.
 - Add 100 µF bulk + 100 nF decoupling near the display connector.
 - Power budget: display logic + backlight can draw 100–200 mA; Wi-Fi peaks add ~200 mA. Use a good USB source or a dedicated 5 V supply.
+
+### Backlight control
+
+This 4.0" module family includes an onboard backlight control transistor (Q1 on this board). The `LED` pin is a **logic-level control input**, not raw LED power: high = on, low = off. Drive it directly from GP21; no external transistor is required.
+
+```
+Pico 2 W                         Module
+GP21 ──── 1k ────┬────────────── LED
+                 │
+                10k
+                 │
+GND ─────────────┴────────────── GND
+3V3 ──────────────────────────── VCC
+```
+
+- The 1k series resistor is optional protection; the 10k pull-down keeps the backlight off while GP21 is floating during boot. If your board turns out to use an active-low `LED` input, remove the pull-down and invert the PWM duty in software.
+- PWM GP21 at 1–2 kHz for dimming. The onboard transistor switches the actual backlight current.
+- **Verify first:** with `LED` open the backlight should be off; 3.3 V through 1k should turn it on. Measure the current into the `LED` pin: a few mA means it is a control input; ~100 mA means it is raw LED power.
+- If your board variant exposes raw LED power instead, use a logic-level MOSFET, not a BC547 (BC547 is only rated 100 mA continuous). Use a low-side N-MOSFET if `LED` is the cathode, or a high-side P-MOSFET if `LED` is the anode. A BC547 can only be used as a small gate driver for a P-MOSFET, not as the main switch.
+- Never drive a raw LED string directly from a GPIO; the GPIO cannot supply the backlight current.
 
 ## Bring-up checklist
 
 - [ ] Measure 3.3 V at the module.
-- [ ] Confirm backlight current and polarity.
+- [ ] Confirm `LED` is a control input (not raw LED power) and measure total backlight current.
 - [ ] Display shows colour bars with correct orientation (M2).
 - [ ] Touch raw values respond across the whole panel; calibrate (M3).
 - [ ] No component gets hot.

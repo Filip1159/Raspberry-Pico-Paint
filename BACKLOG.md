@@ -94,7 +94,7 @@ There is **no capacitive-touch variant** on this board. The display and touch sh
 | Display MOSI | GP19 | SDI | SPI0 TX |
 | Display SCK | GP18 | SCK | SPI0 SCK |
 | Display MISO | — | SDO(MISO) | **Not connected** |
-| Backlight | GP21 | LED | MOSFET switch + PWM; polarity depends on module; never drive directly from GPIO |
+| Backlight | GP21 | LED | High-level control input; module has onboard backlight transistor. Verify before assuming; fallback MOSFET if the pin is raw LED power |
 | Touch SCK | GP10 | T_CLK | SPI1 SCK |
 | Touch MOSI | GP11 | T_DIN | SPI1 TX |
 | Touch MISO | GP12 | T_OUT | SPI1 RX; touch data out |
@@ -110,7 +110,7 @@ There is **no capacitive-touch variant** on this board. The display and touch sh
 - Keep SPI wires short (<10 cm) and provide a solid ground return; 40 MHz is unforgiving of long jumpers.
 - Add 100 µF bulk + 100 nF decoupling near the display connector.
 - Run the panel at 3.3 V. If the module has a 5 V regulator, still use 3.3 V logic.
-- Backlight: measure current and identify LED polarity first. If `LED` is the anode, use a high-side P-MOSFET (or a dedicated backlight driver); if it is the cathode, a low-side N-MOSFET works. PWM at 1–2 kHz. Do not drive the backlight directly from a GPIO.
+- Backlight: the module appears to have an onboard backlight transistor, so `LED` is a high-level control input. Drive it directly from GP21 (1k series, 10k pull-down) and PWM at 1–2 kHz. Verify with a current measurement: a few mA on `LED` means control input; ~100 mA means raw LED power. Only in the raw case use a logic-level MOSFET (not a BC547, which is limited to 100 mA).
 - Power budget: display logic + backlight can draw 100–200 mA; Wi-Fi peaks add ~200 mA. Power from a good USB source or a dedicated 5 V supply, not from another board's 3V3 pin.
 
 ### 4.4 Hardware questions
@@ -123,7 +123,7 @@ Resolved:
 
 Still to verify on the bench:
 
-- [ ] Actual backlight current at 3.3 V.
+- [ ] `LED` pin current (control input vs raw LED) and total backlight current at 3.3 V.
 - [ ] Is 4 MB flash correct for this Pico 2 W? (Standard Pico 2 W = 4 MB.)
 - [ ] Will there be a physical button for reset/BOOTSEL access in the enclosure?
 - [ ] Is the touch panel's raw range usable across the whole screen (check calibration at all four corners)?
@@ -267,7 +267,7 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 
 - [x] M0-1 Photograph the module front/back and read the touch-controller marking — **U2 = HR2046** (XPT2046-compatible).
 - [x] M0-2 Confirm the interface: 14-pin 4-wire SPI, 480×320 — confirmed from silkscreen `4.0" TFT SPI 480*320 V1.0`.
-- [ ] M0-3 Measure backlight current and decide MOSFET/PWM wiring.
+- [ ] M0-3 Verify `LED` is a control input, measure total backlight current, and decide direct PWM vs MOSFET wiring.
 - [ ] M0-4 Verify the Pico 2 W board: flash size, USB serial, `LED_BUILTIN` blink.
 - [ ] M0-5 Wire display + touch per §4.2 on a breadboard; keep leads short.
 - [ ] M0-6 Flash a minimal diagnostic sketch: backlight on/off, read raw touch values, print them over serial.
@@ -597,7 +597,7 @@ Remaining:
 | 4 | Physical button/reset access planned? | No | Design for BOOTSEL access |
 | 5 | Is 4 MB flash confirmed? | No | Assume 4 MB |
 | 6 | Are signed OTA updates required? | No | Password only in v1; signing in icebox |
-| 7 | Backlight: PWM dimming required? | No | Yes, MOSFET + PWM |
+| 7 | Backlight: PWM dimming required? | No | Yes, direct GPIO PWM into the module's LED control input (onboard driver); MOSFET only if the pin is raw LED power |
 
 ---
 
