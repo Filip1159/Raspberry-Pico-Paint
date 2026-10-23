@@ -1,0 +1,9 @@
+#pragma once
+
+#define PAINT_VERSION "0.1.0"
+#define PAINT_VERSION_MAJOR 0
+#define PAINT_VERSION_MINOR 1
+#define PAINT_VERSION_PATCH 0
+
+#define PAINT_BUILD_DATE __DATE__
+#define PAINT_BUILD_TIME __TIME__

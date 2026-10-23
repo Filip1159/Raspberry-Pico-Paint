@@ -1,0 +1,44 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: pip install platformio==6.2.0
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: platformio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            platformio-${{ runner.os }}-
+
+      - name: Build release firmware
+        run: pio run -e pico2w_usb
+
+      - name: Build diagnostics firmware
+        run: pio run -e pico2w_diag
+
+      - name: Run native unit tests
+        run: pio test -e native
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pico-paint-firmware
+          path: |
+            .pio/build/pico2w_usb/firmware.uf2
+            .pio/build/pico2w_usb/firmware.bin
+          if-no-files-found: warn

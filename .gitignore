@@ -1,0 +1,13 @@
+.pio/
+.idea/
+.vscode/
+.DS_Store
+
+# Local secrets — never commit Wi-Fi or OTA credentials.
+include/secrets.h
+
+# Build/export artifacts
+*.uf2
+*.bin
+*.elf
+*.map
