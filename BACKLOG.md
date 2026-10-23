@@ -44,7 +44,7 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - Not yet flashed to hardware; `LittleFS` mount and display bring-up are pending.
 - Git repository initialized (`main`); the M1 skeleton is in the first commit.
 
-**First technical action:** retarget the project to `rpipico2w` and verify the toolchain before writing paint code.
+**Next action:** connect the panel and flash `pico2w_usb` to verify the serial banner and LittleFS mount, then start **M2** (ILI9488 driver and diagnostics).
 
 ---
 
