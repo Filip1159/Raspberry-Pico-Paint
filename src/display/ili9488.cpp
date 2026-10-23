@@ -46,7 +46,7 @@ bool Ili9488::begin() {
 
   reset();
   initSequence();
-  setRotation(0);
+  setRotation(config::kDisplayRotation);
 
   analogWriteFreq(1000);
   analogWriteRange(255);

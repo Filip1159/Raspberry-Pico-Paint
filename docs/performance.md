@@ -11,9 +11,9 @@ Measured 2026-10-24 with the pinned RP2350 platform:
 | `pico2w_diag` | 72,168 B (13.8%) | 332,952 B (15.9%) |
 
 The 320×480 RGB565 framebuffer is allocated from the heap at boot
-(307,200 B). The M1 firmware reported 452,472 B free before that allocation,
-so the expected post-allocation headroom is roughly 145 KB before allocator
-overhead. The diagnostics build prints the exact value.
+(307,200 B). The M1 firmware reported 452,472 B free before that allocation.
+After the framebuffer allocation, the M2 firmware reports **143,360 B free**
+(allocator overhead included).
 
 ## M2 display benchmarks
 
@@ -50,13 +50,18 @@ baseline before tuning.
 | Full-screen `fillScreen` | pending | pending | — |
 | 64×64 rect flush | pending | pending | ≤5 ms |
 | 432 px line flush | pending | pending | — |
-| Full-screen framebuffer flush | pending | pending | ≤150 ms @ 40 MHz |
-| Diagnostics frame flush | pending | pending | — |
-| Free heap after framebuffer | pending | — | ≥24 KB after Wi-Fi |
+| Full-screen framebuffer flush | **200.8 ms** | pending | ≤150 ms @ 40 MHz |
+| Diagnostics frame flush | **200.8 ms** | pending | — |
+| Free heap after framebuffer | **143,360 B** | — | ≥24 KB after Wi-Fi |
 
-Fill in the table after the first on-device run. Keep the fastest stable SPI
-clock in `include/config.h` (`kDisplaySpiHz`); if 40 MHz shows corruption,
-fall back to 27 MHz and note it here.
+The 27 MHz value is from `[disp] diagnostics flush: 200792 us` on 2026-10-24.
+The `pico2w_usb` build shows the diagnostics screen but does not print the
+separate `[bench]` lines; flash `pico2w_diag` to collect those. The 200.8 ms
+measurement is a full-screen framebuffer flush, so it is the relevant number
+for the ≤150 ms at 40 MHz acceptance target.
+
+Keep the fastest stable SPI clock in `include/config.h` (`kDisplaySpiHz`); if
+40 MHz shows corruption, fall back to 27 MHz and note it here.
 
 ## Other targets
 

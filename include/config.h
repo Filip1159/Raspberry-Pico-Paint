@@ -45,6 +45,10 @@ constexpr uint8_t kBacklightPin = 21;
 // Start conservatively; raise after the panel is proven on the bench.
 constexpr uint32_t kDisplaySpiHz = 27000000;
 
+// The module is mounted 180 degrees from the panel's native portrait view.
+// Rotation 2 is the normal upright portrait orientation for this build.
+constexpr uint8_t kDisplayRotation = 2;
+
 // ---------------------------------------------------------------------------
 // Touch (SPI1) — HR2046, XPT2046-compatible
 // ---------------------------------------------------------------------------

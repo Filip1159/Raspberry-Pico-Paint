@@ -309,16 +309,16 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 **Goal:** correct, reasonably fast pixels on the ILI9488.
 
 - [x] M2-1 Implement `Ili9488` driver: reset, init sequence, sleep-out, `COLMOD = 0x66` (18-bit), inversion setting, display-on. *Implemented following the TFT_eSPI ILI9488 sequence; the extra `0x21` inversion command was removed because `0xB4=0x02` already handles inversion. Hardware pending.*
-- [x] M2-2 Implement rotation via MADCTL (test all four values); default **portrait 320×480**. *Implemented: `0x48`, `0x28`, `0x88`, `0xE8`; default rotation 0. All four values still need a visual check on the panel.*
+- [x] M2-2 Implement rotation via MADCTL (test all four values); default **portrait 320×480**. *Implemented: `0x48`, `0x28`, `0x88`, `0xE8`. The module is mounted 180° from the native portrait view, so the default is `config::kDisplayRotation = 2` (`0x88`); all four values still need a visual check.*
 - [x] M2-3 Implement `setAddrWindow(x, y, w, h)` and `pushPixelsRGB565()` with RGB565→RGB666 conversion in a line buffer. *Implemented as `setAddrWindow` + `flush` with a 480×3-byte line buffer.*
 - [x] M2-4 Implement `gfx`: fillRect, hline/vline, Bresenham line, circle, clipped blit, 5×7 bitmap text (integer scaling). *Implemented; font is the classic Adafruit 5×7 table (BSD).*
 - [x] M2-5 Implement dirty-rect merging and banded flush with watchdog feeding. *`DirtyRegion` bounding-box merge + row-banded flush with `rp2040.wdt_reset()` every 16 rows. Canvas/UI integration lands in M4.*
 - [x] M2-6 Build the diagnostics screen: colour bars, grey ramp, checkerboard, orientation test, text sample. *Implemented in `src/main.cpp`; orientation test is the portrait title/geometry plus the rotation API.*
 - [x] M2-7 Benchmark: full screen, 64×64 rect, 432 px line; log ms per operation. *Implemented in `pico2w_diag`; on-device numbers pending.*
-- [ ] M2-8 Measure free heap with and without a Wi-Fi prototype; record the memory decision (§5.3). Re-check the gate in M7. *Post-framebuffer heap will be printed by the diagnostics build; Wi-Fi measurement waits for M7.*
-- [ ] M2-9 Tune SPI clock: 27 → 40 → optionally 62.5 MHz; keep the fastest stable value. *Set to 27 MHz for first bring-up; tune after colour/orientation validation.*
+- [ ] M2-8 Measure free heap with and without a Wi-Fi prototype; record the memory decision (§5.3). Re-check the gate in M7. *Without Wi-Fi: 143,360 B free after the 307,200 B framebuffer; Wi-Fi measurement waits for M7.*
+- [ ] M2-9 Tune SPI clock: 27 → 40 → optionally 62.5 MHz; keep the fastest stable value. *27 MHz verified: full-screen framebuffer flush 200.8 ms. At 40 MHz the transfer portion should drop to ~92 ms; test next.*
 
-**Acceptance:** correct colours and orientation; no tearing/offset; full-screen fill ≤150 ms at 40 MHz; text legible; benchmark numbers recorded in `docs/performance.md`. *Code and diagnostics are ready; hardware acceptance pending.*
+**Acceptance:** correct colours and orientation; no tearing/offset; full-screen fill ≤150 ms at 40 MHz; text legible; benchmark numbers recorded in `docs/performance.md`. *Colours, orientation (180° corrected via rotation 2), offset and clipping verified on 2026-10-24. 27 MHz full-screen flush is 200.8 ms; 40 MHz tuning is the remaining acceptance item.*
 
 **Risk note:** this is the highest technical risk. If the panel shows colour or init problems, compare against a known-good ILI9488 init sequence before building UI on top.
 
