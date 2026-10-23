@@ -8,11 +8,10 @@ The app runs in **portrait (320×480)** and is designed to work fully offline. W
 
 Milestone **M1** is hardware-verified (serial banner, 2 MB LittleFS, free heap).
 Milestone **M2** — ILI9488 driver, RGB565→RGB666 flush, graphics primitives and
-the diagnostics screen — is hardware-verified for colour, orientation and
-geometry. The panel is mounted 180° from its native portrait view, so the
-default is rotation 2. The firmware now runs SPI at the 40 MHz target; on-device
-validation of that clock is the remaining M2 item. The paint engine and UI land
-in M3–M6; OTA lands in M7. See
+the diagnostics screen — is hardware-verified: correct colours, upright portrait
+(rotation 2), stable 40 MHz SPI and a 139.3 ms full-screen flush. Milestone **M3**
+(touch input and UI shell) is next. The paint engine and UI land in M3–M6; OTA
+lands in M7. See
 [`BACKLOG.md`](BACKLOG.md) for the full plan and
 [`docs/performance.md`](docs/performance.md) for benchmark results.
 

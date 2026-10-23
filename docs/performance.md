@@ -44,22 +44,28 @@ theoretical payload time for a full 320×480 RGB666 frame is:
 At the initial 27 MHz clock it was 136.5 ms. The measured value includes
 per-row conversion and transfer overhead. The 27 MHz measurement below is the
 baseline taken before the conversion loop was changed from a per-pixel helper
-call to a direct pointer write; the 40 MHz result is still pending.
+call to a direct pointer write. The optimized 40 MHz build measures 139.3 ms,
+which meets the target.
 
 | Measurement | 27 MHz | 40 MHz | Target |
 |---|---:|---:|---:|
 | Full-screen `fillScreen` | pending | pending | — |
 | 64×64 rect flush | pending | pending | ≤5 ms |
 | 432 px line flush | pending | pending | — |
-| Full-screen framebuffer flush | **200.8 ms** | pending | ≤150 ms @ 40 MHz |
-| Diagnostics frame flush | **200.8 ms** | pending | — |
+| Full-screen framebuffer flush | 200.8 ms | **139.3 ms** | ≤150 ms @ 40 MHz ✅ |
+| Diagnostics frame flush | 200.8 ms | **139.3 ms** | — |
 | Free heap after framebuffer | **143,360 B** | — | ≥24 KB after Wi-Fi |
 
 The 27 MHz value is from `[disp] diagnostics flush: 200792 us` on 2026-10-24,
-before the conversion-loop optimization. The `pico2w_usb` build shows the
-diagnostics screen but does not print the separate `[bench]` lines; flash
-`pico2w_diag` to collect those. A full-screen framebuffer flush is the relevant
-number for the ≤150 ms at 40 MHz acceptance target.
+before the conversion-loop optimization. The 40 MHz value is from
+`[disp] diagnostics flush: 139334 us` on the same day, with the optimized
+conversion loop. The panel was stable at 40 MHz with no tearing or corruption,
+so the ≤150 ms M2 target is met.
+
+The `pico2w_usb` build shows the diagnostics screen but does not print the
+separate `[bench]` lines; flash `pico2w_diag` to collect the individual
+fillScreen/rect/line numbers. A full-screen framebuffer flush is the relevant
+number for the acceptance target.
 
 Keep the fastest stable SPI clock in `include/config.h` (`kDisplaySpiHz`); if
 40 MHz shows corruption, fall back to 27 MHz and note it here.

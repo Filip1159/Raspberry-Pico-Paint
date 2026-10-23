@@ -1,7 +1,7 @@
 # Pico Paint — Backlog & Implementation Plan
 
 **Target hardware:** Raspberry Pi Pico 2 W (RP2350, 4 MB flash, 520 KB SRAM) + 4" 480×320 ILI9488 SPI TFT (used in **portrait 320×480**) with **HR2046 / XPT2046-compatible** resistive touch
-**Status:** M1 hardware-verified; M2 display driver implemented, on-device validation pending
+**Status:** M1 and M2 hardware-verified; M3 touch input and UI shell next
 **Last updated:** 2026-10-24
 
 ---
@@ -42,10 +42,10 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
   - `pico2w_ota`: **SUCCESS** — RAM 72,168 B, flash 332,608 B
   - `pico2w_diag`: **SUCCESS** — RAM 72,168 B, flash 333,008 B
 - Native tests pass under WSL g++ (8/8, including the dirty-region test). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
-- M2 on-device validation is the active task: colours, orientation, text, benchmark timings and post-framebuffer heap.
-- Git repository initialized (`main`); M1 is committed, M2 changes are pending a commit.
+- M2 is hardware-verified: correct colours, upright portrait at rotation 2, no offset/clipping, stable 40 MHz SPI, 139.3 ms full-screen flush, 143,360 B free heap after the framebuffer.
+- Git repository initialized (`main`); M1 and M2 are committed.
 
-**Next action:** flash `.pio/build/pico2w_diag/firmware.uf2` (or run `pio run -e pico2w_diag -t upload`), confirm the diagnostic screen, and record the `[bench]` numbers in `docs/performance.md`. If colours/orientation are correct, raise the SPI clock from 27 to 40 MHz and start **M3** (touch + UI shell).
+**Next action:** wire the HR2046 touch signals (SPI1: SCK GP10, MOSI GP11, MISO GP12, CS GP13, optional IRQ GP14), then implement and test the raw touch driver (M3-1). After raw X/Y values respond across the panel, add 4-point calibration (M3-2) and the UI shell (M3-4…M3-6).
 
 ---
 
@@ -316,9 +316,9 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 - [x] M2-6 Build the diagnostics screen: colour bars, grey ramp, checkerboard, orientation test, text sample. *Implemented in `src/main.cpp`; orientation test is the portrait title/geometry plus the rotation API.*
 - [x] M2-7 Benchmark: full screen, 64×64 rect, 432 px line; log ms per operation. *Implemented in `pico2w_diag`; on-device numbers pending.*
 - [ ] M2-8 Measure free heap with and without a Wi-Fi prototype; record the memory decision (§5.3). Re-check the gate in M7. *Without Wi-Fi: 143,360 B free after the 307,200 B framebuffer; Wi-Fi measurement waits for M7.*
-- [ ] M2-9 Tune SPI clock: 27 → 40 → optionally 62.5 MHz; keep the fastest stable value. *27 MHz verified: full-screen framebuffer flush 200.8 ms before conversion-loop optimization. The 40 MHz build is ready for on-device validation; theoretical payload is 92.2 ms.*
+- [x] M2-9 Tune SPI clock: 27 → 40 → optionally 62.5 MHz; keep the fastest stable value. *40 MHz verified stable on 2026-10-24. Full-screen framebuffer flush: 139.3 ms after conversion-loop optimization (27 MHz baseline: 200.8 ms). 62.5 MHz not attempted; 40 MHz meets the target with margin.*
 
-**Acceptance:** correct colours and orientation; no tearing/offset; full-screen fill ≤150 ms at 40 MHz; text legible; benchmark numbers recorded in `docs/performance.md`. *Colours, orientation (180° corrected via rotation 2), offset and clipping verified on 2026-10-24. 27 MHz full-screen flush was 200.8 ms before optimization; 40 MHz validation is the remaining acceptance item.*
+**Acceptance:** correct colours and orientation; no tearing/offset; full-screen fill ≤150 ms at 40 MHz; text legible; benchmark numbers recorded in `docs/performance.md`. ✅ *Verified on 2026-10-24: correct colours, upright portrait (rotation 2), no offset/clipping, stable 40 MHz, full-screen flush 139.3 ms, 143,360 B free heap after the framebuffer. Individual `[bench]` rows remain optional.*
 
 **Risk note:** this is the highest technical risk. If the panel shows colour or init problems, compare against a known-good ILI9488 init sequence before building UI on top.
 
