@@ -36,7 +36,7 @@ void printBanner() {
                 static_cast<unsigned long>(F_CPU / 1000000UL));
   Serial.printf("  display : ILI9488 %dx%d (portrait)\n",
                 paint::config::kScreenWidth, paint::config::kScreenHeight);
-  Serial.println("  stage   : M2 display bring-up");
+  Serial.println("  stage   : M3 touch + UI shell");
   Serial.println("========================================");
 }
 
