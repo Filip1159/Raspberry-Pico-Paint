@@ -67,6 +67,6 @@ GND ─────────────┴───────────�
 
 - [ ] Measure 3.3 V at the module.
 - [x] Confirm `LED` is a control input: 10k to 3V3 lights the panel (2026-10-24). Total current not yet measured.
-- [ ] Display shows colour bars with correct orientation (M2).
-- [ ] Touch raw values respond across the whole panel; calibrate (M3).
+- [x] Display shows colour bars with correct orientation (M2, rotation 2).
+- [ ] Touch raw values respond across the whole panel; calibrate (M3). Flash `pico2w_usb`, open the serial monitor, and check the `[touch]` lines at idle and while pressing each corner.
 - [ ] No component gets hot.

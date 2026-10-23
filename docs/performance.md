@@ -6,9 +6,9 @@ Measured 2026-10-24 with the pinned RP2350 platform:
 
 | Environment | RAM | Flash |
 |---|---:|---:|
-| `pico2w_usb` | 72,168 B (13.8%) | 332,608 B (15.9%) |
-| `pico2w_ota` | 72,168 B (13.8%) | 332,608 B (15.9%) |
-| `pico2w_diag` | 72,168 B (13.8%) | 333,008 B (15.9%) |
+| `pico2w_usb` | 72,192 B (13.8%) | 333,472 B (15.9%) |
+| `pico2w_ota` | 72,192 B (13.8%) | 333,472 B (15.9%) |
+| `pico2w_diag` | 72,192 B (13.8%) | 333,872 B (16.0%) |
 
 The 320×480 RGB565 framebuffer is allocated from the heap at boot
 (307,200 B). The M1 firmware reported 452,472 B free before that allocation.

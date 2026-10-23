@@ -13,6 +13,13 @@ struct TouchPoint {
   bool pressed = false;
 };
 
+struct TouchRaw {
+  uint16_t x = 0;
+  uint16_t y = 0;
+  uint16_t z = 0;
+  bool pressed = false;
+};
+
 class ITouch {
  public:
   virtual ~ITouch() = default;
@@ -24,6 +31,14 @@ class Xpt2046Touch : public ITouch {
  public:
   bool begin() override;
   bool read(TouchPoint& out) override;
+
+  // Raw 12-bit controller values, useful for bring-up and calibration.
+  bool readRaw(TouchRaw& out);
+
+ private:
+  int16_t emaX_ = 0;
+  int16_t emaY_ = 0;
+  bool wasPressed_ = false;
 };
 
 }  // namespace paint

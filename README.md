@@ -10,8 +10,9 @@ Milestone **M1** is hardware-verified (serial banner, 2 MB LittleFS, free heap).
 Milestone **M2** — ILI9488 driver, RGB565→RGB666 flush, graphics primitives and
 the diagnostics screen — is hardware-verified: correct colours, upright portrait
 (rotation 2), stable 40 MHz SPI and a 139.3 ms full-screen flush. Milestone **M3**
-(touch input and UI shell) is next. The paint engine and UI land in M3–M6; OTA
-lands in M7. See
+(touch input and UI shell) is in progress: the raw XPT2046/HR2046 driver and
+serial diagnostics are implemented; calibration and the UI shell are next. The
+paint engine and UI land in M3–M6; OTA lands in M7. See
 [`BACKLOG.md`](BACKLOG.md) for the full plan and
 [`docs/performance.md`](docs/performance.md) for benchmark results.
 
@@ -59,6 +60,28 @@ pio device monitor -b 115200
 Look for the `[bench]` lines and the `[disp] diagnostics flush` timing. Record
 them in [`docs/performance.md`](docs/performance.md). The initial SPI clock is a
 conservative 27 MHz; it will be raised after the panel is proven.
+
+## Touch bring-up
+
+The HR2046 touch controller uses a separate SPI bus from the display:
+
+| Signal | Pico GPIO | Module pin |
+|---|---|---|
+| Touch SCK | GP10 | T_CLK |
+| Touch MOSI | GP11 | T_DIN |
+| Touch MISO | GP12 | T_OUT |
+| Touch CS | GP13 | T_CS |
+| Touch IRQ | GP14 | T_IRQ (optional; polling is used) |
+
+Do **not** connect the display's SDO/MISO to the touch bus. The current build
+prints raw samples over serial:
+
+```text
+[touch] x=... y=... z=... pressed=0
+```
+
+When the panel is pressed it prints more often. Press the four corners and note
+the raw X/Y values; those are the inputs for the M3 4-point calibration.
 
 ## OTA updates
 

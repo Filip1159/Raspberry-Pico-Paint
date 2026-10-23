@@ -8,6 +8,7 @@
 #include "display/dirty.h"
 #include "display/gfx.h"
 #include "display/ili9488.h"
+#include "input/touch.h"
 #include "paint/color.h"
 #include "version.h"
 
@@ -22,6 +23,7 @@ const paint::Rect kScreenRect = {0, 0, kFbWidth, kFbHeight};
 
 paint::Ili9488 gDisplay;
 paint::DirtyRegion gDirty;
+paint::Xpt2046Touch gTouch;
 uint16_t* gFramebuffer = nullptr;
 
 void printBanner() {
@@ -187,6 +189,14 @@ void setup() {
                 static_cast<unsigned long>(sizeof(uint16_t) * kFbWidth * kFbHeight),
                 static_cast<unsigned long>(rp2040.getFreeHeap()));
 
+  Serial.println("[touch] initialising HR2046/XPT2046 on SPI1");
+  if (!gTouch.begin()) {
+    Serial.println("[touch] init failed");
+  } else {
+    Serial.printf("[touch] ready, SPI1 %lu Hz\n",
+                  static_cast<unsigned long>(paint::config::kTouchSpiHz));
+  }
+
 #ifdef PAINT_DIAG
   runBenchmarks();
 #endif
@@ -205,6 +215,8 @@ void setup() {
 void loop() {
   static uint32_t lastBlink = 0;
   static uint32_t lastHeartbeat = 0;
+  static uint32_t lastTouchPoll = 0;
+  static uint32_t lastTouchPrint = 0;
   static bool ledOn = false;
 
   const uint32_t now = millis();
@@ -220,6 +232,22 @@ void loop() {
     Serial.printf("[hb] uptime=%lu s heap=%u bytes\n",
                   static_cast<unsigned long>(now / 1000),
                   static_cast<unsigned>(rp2040.getFreeHeap()));
+  }
+
+  if (now - lastTouchPoll >= 10) {
+    lastTouchPoll = now;
+    paint::TouchRaw raw;
+    if (gTouch.readRaw(raw)) {
+      const uint32_t interval = raw.pressed ? 100 : 1000;
+      if (now - lastTouchPrint >= interval) {
+        lastTouchPrint = now;
+        Serial.printf("[touch] x=%u y=%u z=%u pressed=%d\n",
+                      static_cast<unsigned>(raw.x),
+                      static_cast<unsigned>(raw.y),
+                      static_cast<unsigned>(raw.z),
+                      raw.pressed ? 1 : 0);
+      }
+    }
   }
 
   delay(1);

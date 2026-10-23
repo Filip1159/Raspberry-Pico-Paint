@@ -1,7 +1,7 @@
 # Pico Paint — Backlog & Implementation Plan
 
 **Target hardware:** Raspberry Pi Pico 2 W (RP2350, 4 MB flash, 520 KB SRAM) + 4" 480×320 ILI9488 SPI TFT (used in **portrait 320×480**) with **HR2046 / XPT2046-compatible** resistive touch
-**Status:** M1 and M2 hardware-verified; M3 touch input and UI shell next
+**Status:** M1 and M2 hardware-verified; M3 touch driver implemented, raw bring-up next
 **Last updated:** 2026-10-24
 
 ---
@@ -38,14 +38,15 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - M1 skeleton is in place and **hardware-verified on 2026-10-24**: serial banner, LittleFS `total=2097152 used=8192 free=2088960`, free heap 452,472 B. The onboard backlight driver is confirmed: `LED` tied to 3V3 through 10k lights the panel.
 - M2 implementation is in place: ILI9488 init/rotation/address-window driver, RGB565→RGB666 line-buffer flush, `gfx` primitives (rect, hline/vline, line, circle, text, blit), 5×7 font, dirty-region helper, diagnostics screen and benchmarks.
 - Builds verified on 2026-10-24:
-  - `pico2w_usb`: **SUCCESS** — RAM 72,168 B (13.8%), flash 332,608 B (15.9%)
-  - `pico2w_ota`: **SUCCESS** — RAM 72,168 B, flash 332,608 B
-  - `pico2w_diag`: **SUCCESS** — RAM 72,168 B, flash 333,008 B
+  - `pico2w_usb`: **SUCCESS** — RAM 72,192 B (13.8%), flash 333,472 B (15.9%)
+  - `pico2w_ota`: **SUCCESS** — RAM 72,192 B, flash 333,472 B
+  - `pico2w_diag`: **SUCCESS** — RAM 72,192 B, flash 333,872 B (16.0%)
 - Native tests pass under WSL g++ (8/8, including the dirty-region test). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
 - M2 is hardware-verified: correct colours, upright portrait at rotation 2, no offset/clipping, stable 40 MHz SPI, 139.3 ms full-screen flush, 143,360 B free heap after the framebuffer.
-- Git repository initialized (`main`); M1 and M2 are committed.
+- M3-1 is implemented: `Xpt2046Touch` on SPI1 (GP10–GP13), pipelined Z1/Z2/X/Y reads, median-of-3, pressure threshold and EMA. `pico2w_usb` now prints raw `[touch]` samples for calibration; hardware wiring/validation is pending.
+- Git repository initialized (`main`); M1, M2 and the M3 touch driver are committed.
 
-**Next action:** wire the HR2046 touch signals (SPI1: SCK GP10, MOSI GP11, MISO GP12, CS GP13, optional IRQ GP14), then implement and test the raw touch driver (M3-1). After raw X/Y values respond across the panel, add 4-point calibration (M3-2) and the UI shell (M3-4…M3-6).
+**Next action:** wire the HR2046 touch signals (SPI1: SCK GP10, MOSI GP11, MISO GP12, CS GP13, optional IRQ GP14), flash `pico2w_usb`, and capture `[touch]` raw values at all four corners. Then implement 4-point calibration (M3-2) and the touch state machine (M3-3).
 
 ---
 
@@ -270,8 +271,8 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 - [x] M0-2 Confirm the interface: 14-pin 4-wire SPI, 480×320 — confirmed from silkscreen `4.0" TFT SPI 480*320 V1.0`.
 - [x] M0-3 Verify `LED` is a control input, measure total backlight current, and decide direct PWM vs MOSFET wiring. *Control input confirmed: 10k from `LED` to 3V3 lights the panel; onboard Q1 driver; GP21 PWM with no external MOSFET. Total current measurement deferred (not needed for the control decision).*
 - [x] M0-4 Verify the Pico 2 W board: flash size, USB serial, `LED_BUILTIN` blink. *USB CDC serial and 4 MB flash confirmed; `LED_BUILTIN` heartbeat is in the M1/M2 firmware.*
-- [ ] M0-5 Wire display + touch per §4.2 on a breadboard; keep leads short. *Display and backlight wired; touch wiring starts in M3.*
-- [ ] M0-6 Flash a minimal diagnostic sketch: backlight on/off, read raw touch values, print them over serial. *Display diagnostics done; raw touch follows in M3.*
+- [ ] M0-5 Wire display + touch per §4.2 on a breadboard; keep leads short. *Display and backlight wired; touch wiring is the current step.*
+- [ ] M0-6 Flash a minimal diagnostic sketch: backlight on/off, read raw touch values, print them over serial. *Display diagnostics done; the M3 build prints raw `[touch]` samples.*
 - [x] M0-7 Record the confirmed wiring and any deviations in `docs/wiring.md`. *Display/backlight confirmed; touch section is ready for M3.*
 
 **Acceptance:** documented module variant and pin map; backlight controllable; raw touch values change with finger position; nothing gets hot.
@@ -328,7 +329,7 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 
 **Goal:** a calibrated, responsive UI that feels like a device, not a dev board.
 
-- [ ] M3-1 Implement `ITouch`; `Xpt2046Touch` on SPI1 at ~2 MHz (mode 0), median-of-3 + EMA filtering.
+- [x] M3-1 Implement `ITouch`; `Xpt2046Touch` on SPI1 at ~2 MHz (mode 0), median-of-3 + EMA filtering. *Implemented with pipelined Z1/Z2/X/Y reads, pressure threshold and raw serial diagnostics. Hardware validation pending.*
 - [ ] M3-2 Implement 4-point calibration; solve and store a 6-coefficient affine transform (Q16.16) in `/config.bin`.
 - [ ] M3-3 Implement the touch state machine: down / move / up, movement threshold, long-press, tap.
 - [ ] M3-4 Build the immediate-mode UI core: layout, buttons, toggles, sliders, modal sheet, toast, hit testing.
