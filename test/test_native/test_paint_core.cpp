@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include "config.h"
+#include "display/dirty.h"
 #include "paint/color.h"
 #include "paint/geometry.h"
 
@@ -65,6 +66,23 @@ static void test_canvas_dimensions() {
   TEST_ASSERT_EQUAL_INT(480, config::kScreenHeight);
 }
 
+static void test_dirty_region_merges_and_clears() {
+  DirtyRegion dirty;
+  TEST_ASSERT_TRUE(dirty.empty());
+  TEST_ASSERT_TRUE(dirty.bounds().empty());
+
+  dirty.add(makeRect(10, 20, 30, 40));
+  dirty.add(makeRect(50, 60, 10, 10));
+  TEST_ASSERT_TRUE(dirty.bounds() == makeRect(10, 20, 50, 50));
+
+  dirty.add(Rect{});
+  TEST_ASSERT_TRUE(dirty.bounds() == makeRect(10, 20, 50, 50));
+
+  const Rect taken = dirty.take();
+  TEST_ASSERT_TRUE(taken == makeRect(10, 20, 50, 50));
+  TEST_ASSERT_TRUE(dirty.empty());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_rgb565_primaries);
@@ -74,5 +92,6 @@ int main(int, char**) {
   RUN_TEST(test_geometry_contains);
   RUN_TEST(test_geometry_intersect);
   RUN_TEST(test_canvas_dimensions);
+  RUN_TEST(test_dirty_region_merges_and_clears);
   return UNITY_END();
 }

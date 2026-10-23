@@ -1,7 +1,7 @@
 #pragma once
 
 // 5x7 bitmap font, scaled by an integer factor at draw time.
-// Glyph data lands with the UI in M3.
+// The table is column-major: five bytes per glyph, bit 0 is the top row.
 
 #include <cstdint>
 
@@ -11,5 +11,7 @@ constexpr int kGlyphWidth = 5;
 constexpr int kGlyphHeight = 7;
 constexpr int kFirstChar = 32;
 constexpr int kLastChar = 126;
+
+extern const uint8_t kFont5x7[];
 
 }  // namespace paint::font

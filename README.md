@@ -6,7 +6,12 @@ The app runs in **portrait (320×480)** and is designed to work fully offline. W
 
 ## Status
 
-Milestone **M1** — project skeleton, build environments, versioning and CI. The paint engine and display driver land in M2–M6; OTA lands in M7. See [`BACKLOG.md`](BACKLOG.md) for the full plan.
+Milestone **M1** is hardware-verified (serial banner, 2 MB LittleFS, free heap).
+Milestone **M2** — ILI9488 driver, RGB565→RGB666 flush, graphics primitives and
+the diagnostics screen — is implemented and awaiting the first on-device colour
+and benchmark run. The paint engine and UI land in M3–M6; OTA lands in M7. See
+[`BACKLOG.md`](BACKLOG.md) for the full plan and
+[`docs/performance.md`](docs/performance.md) for benchmark results.
 
 ## Hardware
 
@@ -38,6 +43,21 @@ pio device monitor -b 115200
 
 The firmware prints a banner with the version, board, display size, LittleFS statistics and free heap.
 
+### Display diagnostics
+
+The normal `pico2w_usb` build currently shows the M2 diagnostic screen: title
+text, colour bars, grey ramp, checkerboard, a circle and a line. The `pico2w_diag`
+build additionally runs the SPI benchmarks:
+
+```bash
+pio run -e pico2w_diag -t upload
+pio device monitor -b 115200
+```
+
+Look for the `[bench]` lines and the `[disp] diagnostics flush` timing. Record
+them in [`docs/performance.md`](docs/performance.md). The initial SPI clock is a
+conservative 27 MHz; it will be raised after the panel is proven.
+
 ## OTA updates
 
 OTA uses arduino-pico's `ArduinoOTA` plus PlatformIO's `espota` upload protocol — the same workflow as an ESP32, with no web page.
@@ -68,11 +88,14 @@ include/
   ui/                   screens, widgets, icons, font
   net/                  Wi-Fi and ArduinoOTA lifecycle
 src/
-  main.cpp              boot, filesystem, heartbeat
+  main.cpp              boot, filesystem, diagnostics, heartbeat
+  display/              ILI9488 driver and graphics primitives
+  ui/                   5×7 bitmap font
 test/
   test_native/          host unit tests (Unity)
 docs/
   wiring.md             confirmed pin map and power notes
+  performance.md        build footprint and display benchmarks
   ota.md                OTA operations
 ```
 

@@ -1,0 +1,72 @@
+# Performance notes
+
+## Build footprint
+
+Measured 2026-10-24 with the pinned RP2350 platform:
+
+| Environment | RAM | Flash |
+|---|---:|---:|
+| `pico2w_usb` | 72,168 B (13.8%) | 332,544 B (15.9%) |
+| `pico2w_ota` | 72,168 B (13.8%) | 332,544 B (15.9%) |
+| `pico2w_diag` | 72,168 B (13.8%) | 332,952 B (15.9%) |
+
+The 320×480 RGB565 framebuffer is allocated from the heap at boot
+(307,200 B). The M1 firmware reported 452,472 B free before that allocation,
+so the expected post-allocation headroom is roughly 145 KB before allocator
+overhead. The diagnostics build prints the exact value.
+
+## M2 display benchmarks
+
+Build and flash the diagnostics environment, then open the serial monitor:
+
+```bash
+pio run -e pico2w_diag -t upload
+pio device monitor -b 115200
+```
+
+The firmware prints these lines at boot:
+
+```
+[bench] fillScreen 320x480: ... us
+[bench] 64x64 rect flush: ... us
+[bench] 432px line flush: ... us
+[bench] full-screen flush: ... us
+[disp] diagnostics flush: ... us
+```
+
+At the initial conservative SPI clock of **27 MHz**, the theoretical payload
+time for a full 320×480 RGB666 frame is:
+
+```
+320 * 480 * 3 bytes / 27,000,000 bit/s = 136.5 ms
+```
+
+The measured value includes per-row conversion and transfer overhead. The M2
+acceptance target is **≤150 ms at 40 MHz**; the 27 MHz measurement is the
+baseline before tuning.
+
+| Measurement | 27 MHz | 40 MHz | Target |
+|---|---:|---:|---:|
+| Full-screen `fillScreen` | pending | pending | — |
+| 64×64 rect flush | pending | pending | ≤5 ms |
+| 432 px line flush | pending | pending | — |
+| Full-screen framebuffer flush | pending | pending | ≤150 ms @ 40 MHz |
+| Diagnostics frame flush | pending | pending | — |
+| Free heap after framebuffer | pending | — | ≥24 KB after Wi-Fi |
+
+Fill in the table after the first on-device run. Keep the fastest stable SPI
+clock in `include/config.h` (`kDisplaySpiHz`); if 40 MHz shows corruption,
+fall back to 27 MHz and note it here.
+
+## Other targets
+
+| Metric | Target |
+|---|---|
+| Touch sampling | 100 Hz |
+| Touch-to-pixel latency | < 40 ms |
+| 8 px brush continuous stroke | ≥ 30 fps |
+| UI button feedback | < 50 ms |
+| Save (typical drawing) | < 500 ms |
+| Load | < 1 s |
+| Boot to canvas | < 2.5 s |
+| OTA (400 KB firmware) | < 60 s on LAN |

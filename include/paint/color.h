@@ -60,5 +60,8 @@ constexpr uint16_t kWhite = 0xFFFF;
 constexpr uint16_t kRed = 0xF800;
 constexpr uint16_t kGreen = 0x07E0;
 constexpr uint16_t kBlue = 0x001F;
+constexpr uint16_t kYellow = 0xFFE0;
+constexpr uint16_t kCyan = 0x07FF;
+constexpr uint16_t kMagenta = 0xF81F;
 
 }  // namespace paint

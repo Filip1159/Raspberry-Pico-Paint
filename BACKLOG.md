@@ -1,8 +1,8 @@
 # Pico Paint — Backlog & Implementation Plan
 
 **Target hardware:** Raspberry Pi Pico 2 W (RP2350, 4 MB flash, 520 KB SRAM) + 4" 480×320 ILI9488 SPI TFT (used in **portrait 320×480**) with **HR2046 / XPT2046-compatible** resistive touch
-**Status:** Planning — no application code yet
-**Last updated:** 2026-10-23
+**Status:** M1 hardware-verified; M2 display driver implemented, on-device validation pending
+**Last updated:** 2026-10-24
 
 ---
 
@@ -35,16 +35,17 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 ## 2. Current repository state
 
 - PlatformIO project retargeted to **Pico 2 W** (`board = rpipico2w`) via the RP2350-capable maxgerhardt platform fork, pinned to a commit.
-- M1 skeleton is in place: `platformio.ini` environments, `include/` module headers, `src/main.cpp`, native tests, docs and CI.
-- Builds verified on 2026-10-23:
-  - `pico2w_usb`: **SUCCESS** — RAM 70,260 B (13.4%), flash 321,112 B (15.3%)
-  - `pico2w_ota`: **SUCCESS**
-  - `pico2w_diag`: **SUCCESS**
-- Native tests pass under WSL g++ (7/7). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
-- Not yet flashed to hardware; `LittleFS` mount and display bring-up are pending.
-- Git repository initialized (`main`); the M1 skeleton is in the first commit.
+- M1 skeleton is in place and **hardware-verified on 2026-10-24**: serial banner, LittleFS `total=2097152 used=8192 free=2088960`, free heap 452,472 B. The onboard backlight driver is confirmed: `LED` tied to 3V3 through 10k lights the panel.
+- M2 implementation is in place: ILI9488 init/rotation/address-window driver, RGB565→RGB666 line-buffer flush, `gfx` primitives (rect, hline/vline, line, circle, text, blit), 5×7 font, dirty-region helper, diagnostics screen and benchmarks.
+- Builds verified on 2026-10-24:
+  - `pico2w_usb`: **SUCCESS** — RAM 72,168 B (13.8%), flash 332,544 B (15.9%)
+  - `pico2w_ota`: **SUCCESS** — RAM 72,168 B, flash 332,544 B
+  - `pico2w_diag`: **SUCCESS** — RAM 72,168 B, flash 332,952 B
+- Native tests pass under WSL g++ (8/8, including the dirty-region test). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
+- M2 on-device validation is the active task: colours, orientation, text, benchmark timings and post-framebuffer heap.
+- Git repository initialized (`main`); M1 is committed, M2 changes are pending a commit.
 
-**Next action:** connect the panel and flash `pico2w_usb` to verify the serial banner and LittleFS mount, then start **M2** (ILI9488 driver and diagnostics).
+**Next action:** flash `.pio/build/pico2w_diag/firmware.uf2` (or run `pio run -e pico2w_diag -t upload`), confirm the diagnostic screen, and record the `[bench]` numbers in `docs/performance.md`. If colours/orientation are correct, raise the SPI clock from 27 to 40 MHz and start **M3** (touch + UI shell).
 
 ---
 
@@ -178,9 +179,9 @@ Rule: `Paint`, `Storage` codecs, and geometry helpers must be **Arduino-free** s
 |---|---:|---|
 | 320×480 RGB565 framebuffer | 307,200 | Full screen, including UI |
 | Undo ring (32 tiles × 32×32×2 B) | 65,536 | Grows/shrinks by action; see §5.5 |
-| Display line buffer (320×3 B × 2) | 1,920 | Ping-pong if DMA is added |
+| Display line buffer (480×3 B) | 1,440 | Sized for landscape rotation; single buffer until DMA |
 | UI state, fonts, icons | ≈ 8,000 | Flash-resident assets |
-| Wi-Fi + lwIP buffers | ≈ 50,000 | Measured in M2; may vary |
+| Wi-Fi + lwIP buffers | ≈ 50,000 | Measure in M7; may vary |
 | Stacks (2 cores) + heap headroom | ≈ 40,000 | |
 | **Estimated used** | **≈ 462 KB** | **≈ 58 KB free** |
 
@@ -267,11 +268,11 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 
 - [x] M0-1 Photograph the module front/back and read the touch-controller marking — **U2 = HR2046** (XPT2046-compatible).
 - [x] M0-2 Confirm the interface: 14-pin 4-wire SPI, 480×320 — confirmed from silkscreen `4.0" TFT SPI 480*320 V1.0`.
-- [ ] M0-3 Verify `LED` is a control input, measure total backlight current, and decide direct PWM vs MOSFET wiring.
-- [ ] M0-4 Verify the Pico 2 W board: flash size, USB serial, `LED_BUILTIN` blink.
-- [ ] M0-5 Wire display + touch per §4.2 on a breadboard; keep leads short.
-- [ ] M0-6 Flash a minimal diagnostic sketch: backlight on/off, read raw touch values, print them over serial.
-- [ ] M0-7 Record the confirmed wiring and any deviations in `docs/wiring.md`.
+- [x] M0-3 Verify `LED` is a control input, measure total backlight current, and decide direct PWM vs MOSFET wiring. *Control input confirmed: 10k from `LED` to 3V3 lights the panel; onboard Q1 driver; GP21 PWM with no external MOSFET. Total current measurement deferred (not needed for the control decision).*
+- [x] M0-4 Verify the Pico 2 W board: flash size, USB serial, `LED_BUILTIN` blink. *USB CDC serial and 4 MB flash confirmed; `LED_BUILTIN` heartbeat is in the M1/M2 firmware.*
+- [ ] M0-5 Wire display + touch per §4.2 on a breadboard; keep leads short. *Display and backlight wired; touch wiring starts in M3.*
+- [ ] M0-6 Flash a minimal diagnostic sketch: backlight on/off, read raw touch values, print them over serial. *Display diagnostics done; raw touch follows in M3.*
+- [x] M0-7 Record the confirmed wiring and any deviations in `docs/wiring.md`. *Display/backlight confirmed; touch section is ready for M3.*
 
 **Acceptance:** documented module variant and pin map; backlight controllable; raw touch values change with finger position; nothing gets hot.
 
@@ -281,11 +282,11 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 
 **Goal:** a reproducible build/flash/test setup for Pico 2 W, including the OTA target.
 
-**Status (2026-10-23):** build configuration complete and compiling; on-device checks wait for the panel to be connected.
+**Status (2026-10-24):** build configuration complete, compiling, flashed and hardware-verified.
 
 - [x] M1-1 Update `platformio.ini`: `board = rpipico2w`, `framework = arduino`, and the RP2350-capable platform fork pinned to a commit (the official `platformio/raspberrypi` platform only ships RP2040 boards):
   `platform = https://github.com/maxgerhardt/platform-raspberrypi.git#5d4561a05e3b212660ac6fdd3fbfb328d1988aa1`
-- [ ] M1-2 Add `board_build.filesystem_size = 2m`; verify LittleFS reports the expected size. *Build reports 2 MB; on-device mount pending.*
+- [x] M1-2 Add `board_build.filesystem_size = 2m`; verify LittleFS reports the expected size. *On-device: `total=2097152 used=8192 free=2088960`.*
 - [x] M1-3 Add environments:
   - `pico2w_usb` — normal USB upload (`upload_protocol = picotool`)
   - `pico2w_ota` — `upload_protocol = espota`, `upload_port = ${sysenv.PAINT_OTA_IP}`, `upload_flags = --port=2040 --auth=${sysenv.PAINT_OTA_PASSWORD}`
@@ -294,12 +295,12 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 - [x] M1-4 Add `include/config.h` (pins, dimensions, limits) and `include/version.h` (`PAINT_VERSION`, build timestamp).
 - [x] M1-5 Add `include/secrets.example.h` and a runtime fallback when `secrets.h` is absent (empty SSID → offline mode).
 - [x] M1-6 Extend `.gitignore`: `include/secrets.h`, `.pio/`, build artifacts, `.idea/`.
-- [ ] M1-7 Create the directory skeleton from §5.2 and a minimal `main.cpp` (serial banner + splash colour). *Banner and heartbeat done; splash colour deferred to M2 (no display driver yet).*
+- [x] M1-7 Create the directory skeleton from §5.2 and a minimal `main.cpp` (serial banner + splash colour). *Banner, heartbeat and M2 diagnostic splash are implemented.*
 - [x] M1-8 Initialise git and make the first commit (recommended; enables version stamping later).
 - [x] M1-9 Add a CI workflow (GitHub Actions, if the project lives on GitHub): build `pico2w_usb`, run `native` tests, upload UF2/BIN artifacts.
 - [x] M1-10 Document build/flash/OTA commands in `README.md`.
 
-**Acceptance:** `pio run -e pico2w_usb` succeeds; UF2 flashes; serial banner appears; LittleFS reports ≈2 MB (`LittleFS.info()`); `pio test -e native` runs; `pico2w_ota` compiles. *Build and `pico2w_ota` verified; native tests pass under WSL (Windows host lacks gcc); UF2 flash, banner and FS mount await hardware.*
+**Acceptance:** `pio run -e pico2w_usb` succeeds; UF2 flashes; serial banner appears; LittleFS reports ≈2 MB (`LittleFS.info()`); `pio test -e native` runs; `pico2w_ota` compiles. *All verified: USB flash, banner, 2 MB LittleFS, 8/8 native tests under WSL (Windows host lacks gcc), `pico2w_ota` builds.*
 
 ---
 
@@ -307,17 +308,17 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 
 **Goal:** correct, reasonably fast pixels on the ILI9488.
 
-- [ ] M2-1 Implement `Ili9488` driver: reset, init sequence, sleep-out, `COLMOD = 0x66` (18-bit), inversion setting, display-on.
-- [ ] M2-2 Implement rotation via MADCTL (test all four values); default **portrait 320×480**.
-- [ ] M2-3 Implement `setAddrWindow(x, y, w, h)` and `pushPixelsRGB565()` with RGB565→RGB666 conversion in a line buffer.
-- [ ] M2-4 Implement `gfx`: fillRect, hline/vline, Bresenham line, circle, clipped blit, 5×7 bitmap text (integer scaling).
-- [ ] M2-5 Implement dirty-rect merging and banded flush with watchdog feeding.
-- [ ] M2-6 Build the diagnostics screen: colour bars, grey ramp, checkerboard, orientation test, text sample.
-- [ ] M2-7 Benchmark: full screen, 64×64 rect, 432 px line; log ms per operation.
-- [ ] M2-8 Measure free heap with and without a Wi-Fi prototype; record the memory decision (§5.3). Re-check the gate in M7.
-- [ ] M2-9 Tune SPI clock: 27 → 40 → optionally 62.5 MHz; keep the fastest stable value.
+- [x] M2-1 Implement `Ili9488` driver: reset, init sequence, sleep-out, `COLMOD = 0x66` (18-bit), inversion setting, display-on. *Implemented following the TFT_eSPI ILI9488 sequence; the extra `0x21` inversion command was removed because `0xB4=0x02` already handles inversion. Hardware pending.*
+- [x] M2-2 Implement rotation via MADCTL (test all four values); default **portrait 320×480**. *Implemented: `0x48`, `0x28`, `0x88`, `0xE8`; default rotation 0. All four values still need a visual check on the panel.*
+- [x] M2-3 Implement `setAddrWindow(x, y, w, h)` and `pushPixelsRGB565()` with RGB565→RGB666 conversion in a line buffer. *Implemented as `setAddrWindow` + `flush` with a 480×3-byte line buffer.*
+- [x] M2-4 Implement `gfx`: fillRect, hline/vline, Bresenham line, circle, clipped blit, 5×7 bitmap text (integer scaling). *Implemented; font is the classic Adafruit 5×7 table (BSD).*
+- [x] M2-5 Implement dirty-rect merging and banded flush with watchdog feeding. *`DirtyRegion` bounding-box merge + row-banded flush with `rp2040.wdt_reset()` every 16 rows. Canvas/UI integration lands in M4.*
+- [x] M2-6 Build the diagnostics screen: colour bars, grey ramp, checkerboard, orientation test, text sample. *Implemented in `src/main.cpp`; orientation test is the portrait title/geometry plus the rotation API.*
+- [x] M2-7 Benchmark: full screen, 64×64 rect, 432 px line; log ms per operation. *Implemented in `pico2w_diag`; on-device numbers pending.*
+- [ ] M2-8 Measure free heap with and without a Wi-Fi prototype; record the memory decision (§5.3). Re-check the gate in M7. *Post-framebuffer heap will be printed by the diagnostics build; Wi-Fi measurement waits for M7.*
+- [ ] M2-9 Tune SPI clock: 27 → 40 → optionally 62.5 MHz; keep the fastest stable value. *Set to 27 MHz for first bring-up; tune after colour/orientation validation.*
 
-**Acceptance:** correct colours and orientation; no tearing/offset; full-screen fill ≤150 ms at 40 MHz; text legible; benchmark numbers recorded in `docs/performance.md`.
+**Acceptance:** correct colours and orientation; no tearing/offset; full-screen fill ≤150 ms at 40 MHz; text legible; benchmark numbers recorded in `docs/performance.md`. *Code and diagnostics are ready; hardware acceptance pending.*
 
 **Risk note:** this is the highest technical risk. If the panel shows colour or init problems, compare against a known-good ILI9488 init sequence before building UI on top.
 

@@ -1,13 +1,28 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 
+#include <cstdio>
+#include <new>
+
 #include "config.h"
+#include "display/dirty.h"
+#include "display/gfx.h"
+#include "display/ili9488.h"
+#include "paint/color.h"
 #include "version.h"
 
 namespace {
 
 constexpr uint32_t kHeartbeatMs = 5000;
 constexpr uint32_t kLedBlinkMs = 500;
+constexpr int kFbWidth = paint::config::kScreenWidth;
+constexpr int kFbHeight = paint::config::kScreenHeight;
+
+const paint::Rect kScreenRect = {0, 0, kFbWidth, kFbHeight};
+
+paint::Ili9488 gDisplay;
+paint::DirtyRegion gDirty;
+uint16_t* gFramebuffer = nullptr;
 
 void printBanner() {
   Serial.println();
@@ -19,7 +34,7 @@ void printBanner() {
                 static_cast<unsigned long>(F_CPU / 1000000UL));
   Serial.printf("  display : ILI9488 %dx%d (portrait)\n",
                 paint::config::kScreenWidth, paint::config::kScreenHeight);
-  Serial.println("  stage   : M1 skeleton");
+  Serial.println("  stage   : M2 display bring-up");
   Serial.println("========================================");
 }
 
@@ -52,12 +67,86 @@ void printFilesystemStats() {
                 static_cast<unsigned long>(info.totalBytes - info.usedBytes));
 }
 
+void flushScreen() {
+  gDirty.add(kScreenRect);
+  gDisplay.flush(gDirty.take(), gFramebuffer, kFbWidth);
+}
+
+void drawDiagnostics() {
+  using namespace paint;
+
+  gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect, kScreenRect, kBlack);
+
+  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 8}, "Pico Paint", kWhite, 3);
+  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 40}, "M2 ILI9488 test", kCyan, 2);
+  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 62}, "320x480 portrait", kWhite, 2);
+
+  const uint16_t bars[8] = {kRed, kGreen, kBlue, kWhite, kBlack, kYellow, kCyan, kMagenta};
+  for (int i = 0; i < 8; ++i) {
+    gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect,
+                  {static_cast<int16_t>(i * 40), 90, 40, 60}, bars[i]);
+  }
+
+  for (int i = 0; i < 16; ++i) {
+    const uint8_t v = static_cast<uint8_t>(i * 17);
+    gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect,
+                  {static_cast<int16_t>(i * 20), 160, 20, 30}, rgb565(v, v, v));
+  }
+
+  for (int y = 0; y < 80; y += 8) {
+    for (int x = 0; x < kFbWidth; x += 8) {
+      if (((x / 8) + (y / 8)) & 1) {
+        gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect,
+                      {static_cast<int16_t>(x), static_cast<int16_t>(200 + y), 8, 8}, kWhite);
+      }
+    }
+  }
+
+  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 292}, "SPI 27 MHz", kYellow, 2);
+  char heapText[32];
+  std::snprintf(heapText, sizeof(heapText), "heap %lu",
+                static_cast<unsigned long>(rp2040.getFreeHeap()));
+  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 314}, heapText, kWhite, 2);
+  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 336}, "touch HR2046", kWhite, 2);
+
+  gfx::drawCircle(gFramebuffer, kFbWidth, kScreenRect, {60, 410}, 30, kMagenta);
+  gfx::drawLine(gFramebuffer, kFbWidth, kScreenRect, {110, 455}, {300, 455}, kGreen);
+  gfx::drawRect(gFramebuffer, kFbWidth, kScreenRect, {4, 4, 312, 472}, kBlue);
+}
+
+void runBenchmarks() {
+  paint::gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect, kScreenRect, paint::kBlack);
+
+  uint32_t start = micros();
+  gDisplay.fillScreen(paint::kBlack);
+  uint32_t elapsed = micros() - start;
+  Serial.printf("[bench] fillScreen 320x480: %lu us\n", static_cast<unsigned long>(elapsed));
+
+  const paint::Rect rect = {64, 64, 64, 64};
+  paint::gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect, rect, paint::kRed);
+  start = micros();
+  gDisplay.flush(rect, gFramebuffer, kFbWidth);
+  elapsed = micros() - start;
+  Serial.printf("[bench] 64x64 rect flush: %lu us\n", static_cast<unsigned long>(elapsed));
+
+  paint::gfx::drawLine(gFramebuffer, kFbWidth, kScreenRect, {20, 432}, {300, 432}, paint::kGreen);
+  const paint::Rect lineBox = {20, 432, 281, 1};
+  start = micros();
+  gDisplay.flush(lineBox, gFramebuffer, kFbWidth);
+  elapsed = micros() - start;
+  Serial.printf("[bench] 432px line flush: %lu us\n", static_cast<unsigned long>(elapsed));
+
+  start = micros();
+  flushScreen();
+  elapsed = micros() - start;
+  Serial.printf("[bench] full-screen flush: %lu us\n", static_cast<unsigned long>(elapsed));
+}
+
 }  // namespace
 
 void setup() {
   Serial.begin(115200);
 
-  // Give USB CDC a moment to enumerate, but never block boot indefinitely.
   const uint32_t serialStart = millis();
   while (!Serial && (millis() - serialStart) < 2000) {
     delay(10);
@@ -73,6 +162,36 @@ void setup() {
   } else {
     Serial.println("[fs] unavailable; saving will be disabled");
   }
+
+  Serial.println("[disp] initialising ILI9488");
+  if (!gDisplay.begin()) {
+    Serial.println("[disp] init failed");
+  }
+  Serial.printf("[disp] %dx%d, rotation %u, SPI %lu Hz\n",
+                gDisplay.width(), gDisplay.height(),
+                static_cast<unsigned>(gDisplay.rotation()),
+                static_cast<unsigned long>(paint::config::kDisplaySpiHz));
+
+  gFramebuffer = new (std::nothrow) uint16_t[kFbWidth * kFbHeight];
+  if (!gFramebuffer) {
+    Serial.println("[fb] allocation failed");
+    gDisplay.fillScreen(paint::kRed);
+    return;
+  }
+  Serial.printf("[fb] %dx%d RGB565 = %lu bytes, free heap %lu\n",
+                kFbWidth, kFbHeight,
+                static_cast<unsigned long>(sizeof(uint16_t) * kFbWidth * kFbHeight),
+                static_cast<unsigned long>(rp2040.getFreeHeap()));
+
+#ifdef PAINT_DIAG
+  runBenchmarks();
+#endif
+
+  drawDiagnostics();
+  const uint32_t start = micros();
+  flushScreen();
+  const uint32_t elapsed = micros() - start;
+  Serial.printf("[disp] diagnostics flush: %lu us\n", static_cast<unsigned long>(elapsed));
 
   Serial.printf("[mem] free heap: %u bytes\n",
                 static_cast<unsigned>(rp2040.getFreeHeap()));

@@ -34,6 +34,21 @@ struct Rect {
     return Rect{nx, ny, static_cast<int16_t>(nr - nx), static_cast<int16_t>(nb - ny)};
   }
 
+  constexpr Rect unite(const Rect& other) const {
+    if (empty()) {
+      return other;
+    }
+    if (other.empty()) {
+      return *this;
+    }
+
+    const int16_t nx = x < other.x ? x : other.x;
+    const int16_t ny = y < other.y ? y : other.y;
+    const int16_t nr = right() > other.right() ? right() : other.right();
+    const int16_t nb = bottom() > other.bottom() ? bottom() : other.bottom();
+    return Rect{nx, ny, static_cast<int16_t>(nr - nx), static_cast<int16_t>(nb - ny)};
+  }
+
   constexpr bool operator==(const Rect& other) const {
     return x == other.x && y == other.y && w == other.w && h == other.h;
   }

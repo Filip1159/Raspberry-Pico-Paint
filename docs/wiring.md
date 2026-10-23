@@ -58,6 +58,7 @@ GND ─────────────┴───────────�
 
 - The 1k series resistor is optional protection; the 10k pull-down keeps the backlight off while GP21 is floating during boot. If your board turns out to use an active-low `LED` input, remove the pull-down and invert the PWM duty in software.
 - PWM GP21 at 1–2 kHz for dimming. The onboard transistor switches the actual backlight current.
+- **Bench result (2026-10-24):** connecting `LED` to 3V3 through a 10k resistor lights the panel. That confirms a high-level control input and the onboard driver; no external BC547/MOSFET is needed. For controlled dimming, drive `LED` from GP21 through 1k with a 10k pull-down to GND instead of tying it permanently to 3V3.
 - **Verify first:** with `LED` open the backlight should be off; 3.3 V through 1k should turn it on. Measure the current into the `LED` pin: a few mA means it is a control input; ~100 mA means it is raw LED power.
 - If your board variant exposes raw LED power instead, use a logic-level MOSFET, not a BC547 (BC547 is only rated 100 mA continuous). Use a low-side N-MOSFET if `LED` is the cathode, or a high-side P-MOSFET if `LED` is the anode. A BC547 can only be used as a small gate driver for a P-MOSFET, not as the main switch.
 - Never drive a raw LED string directly from a GPIO; the GPIO cannot supply the backlight current.
@@ -65,7 +66,7 @@ GND ─────────────┴───────────�
 ## Bring-up checklist
 
 - [ ] Measure 3.3 V at the module.
-- [ ] Confirm `LED` is a control input (not raw LED power) and measure total backlight current.
+- [x] Confirm `LED` is a control input: 10k to 3V3 lights the panel (2026-10-24). Total current not yet measured.
 - [ ] Display shows colour bars with correct orientation (M2).
 - [ ] Touch raw values respond across the whole panel; calibrate (M3).
 - [ ] No component gets hot.
