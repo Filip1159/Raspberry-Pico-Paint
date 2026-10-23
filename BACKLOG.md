@@ -299,7 +299,7 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 - [x] M1-9 Add a CI workflow (GitHub Actions, if the project lives on GitHub): build `pico2w_usb`, run `native` tests, upload UF2/BIN artifacts.
 - [x] M1-10 Document build/flash/OTA commands in `README.md`.
 
-**Acceptance:** `pio run -e pico2w_usb` succeeds; UF2 flashes; serial banner appears; `LittleFS.totalBytes()` ≈ 2 MB; `pio test -e native` runs; `pico2w_ota` compiles. *Build and `pico2w_ota` verified; native tests pass under WSL (Windows host lacks gcc); UF2 flash, banner and FS mount await hardware.*
+**Acceptance:** `pio run -e pico2w_usb` succeeds; UF2 flashes; serial banner appears; LittleFS reports ≈2 MB (`LittleFS.info()`); `pio test -e native` runs; `pico2w_ota` compiles. *Build and `pico2w_ota` verified; native tests pass under WSL (Windows host lacks gcc); UF2 flash, banner and FS mount await hardware.*
 
 ---
 
