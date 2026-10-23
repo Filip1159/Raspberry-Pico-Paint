@@ -237,15 +237,31 @@ void loop() {
   if (now - lastTouchPoll >= 10) {
     lastTouchPoll = now;
     paint::TouchRaw raw;
-    if (gTouch.readRaw(raw)) {
+    paint::TouchPoint point;
+    if (gTouch.read(point, raw)) {
       const uint32_t interval = raw.pressed ? 100 : 1000;
       if (now - lastTouchPrint >= interval) {
         lastTouchPrint = now;
-        Serial.printf("[touch] x=%u y=%u z=%u pressed=%d\n",
+        Serial.printf("[touch] raw=%u,%u z=%u mapped=%d,%d pressed=%d\n",
                       static_cast<unsigned>(raw.x),
                       static_cast<unsigned>(raw.y),
                       static_cast<unsigned>(raw.z),
+                      static_cast<int>(point.x),
+                      static_cast<int>(point.y),
                       raw.pressed ? 1 : 0);
+      }
+
+      if (point.pressed) {
+        // Temporary visual check until the M3 UI shell replaces the
+        // diagnostics screen: a red crosshair follows the calibrated touch.
+        const int16_t mx = point.x;
+        const int16_t my = point.y;
+        paint::gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect,
+                             {static_cast<int16_t>(mx - 4), my, 9, 1}, paint::kRed);
+        paint::gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect,
+                             {mx, static_cast<int16_t>(my - 4), 1, 9}, paint::kRed);
+        gDisplay.flush({static_cast<int16_t>(mx - 4), static_cast<int16_t>(my - 4), 9, 9},
+                       gFramebuffer, kFbWidth);
       }
     }
   }

@@ -5,6 +5,8 @@
 
 #include <cstdint>
 
+#include "input/calibration.h"
+
 namespace paint {
 
 struct TouchPoint {
@@ -32,10 +34,17 @@ class Xpt2046Touch : public ITouch {
   bool begin() override;
   bool read(TouchPoint& out) override;
 
+  // Reads raw and calibrated values from a single controller sample.
+  bool read(TouchPoint& out, TouchRaw& rawOut);
+
   // Raw 12-bit controller values, useful for bring-up and calibration.
   bool readRaw(TouchRaw& out);
 
+  void setCalibration(const Calibration& cal) { cal_ = cal; }
+  const Calibration& calibration() const { return cal_; }
+
  private:
+  Calibration cal_;
   int16_t emaX_ = 0;
   int16_t emaY_ = 0;
   bool wasPressed_ = false;

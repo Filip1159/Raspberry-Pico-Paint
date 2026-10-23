@@ -10,9 +10,10 @@ Milestone **M1** is hardware-verified (serial banner, 2 MB LittleFS, free heap).
 Milestone **M2** — ILI9488 driver, RGB565→RGB666 flush, graphics primitives and
 the diagnostics screen — is hardware-verified: correct colours, upright portrait
 (rotation 2), stable 40 MHz SPI and a 139.3 ms full-screen flush. Milestone **M3**
-(touch input and UI shell) is in progress: the raw XPT2046/HR2046 driver and
-serial diagnostics are implemented; calibration and the UI shell are next. The
-paint engine and UI land in M3–M6; OTA lands in M7. See
+(touch input and UI shell) is in progress: the XPT2046/HR2046 driver is
+hardware-validated, and 4-point calibration plus a temporary touch crosshair
+are implemented. The touch state machine and UI shell are next. The paint
+engine and UI land in M3–M6; OTA lands in M7. See
 [`BACKLOG.md`](BACKLOG.md) for the full plan and
 [`docs/performance.md`](docs/performance.md) for benchmark results.
 
@@ -77,11 +78,13 @@ Do **not** connect the display's SDO/MISO to the touch bus. The current build
 prints raw samples over serial:
 
 ```text
-[touch] x=... y=... z=... pressed=0
+[touch] raw=... z=... mapped=... pressed=0
 ```
 
-When the panel is pressed it prints more often. Press the four corners and note
-the raw X/Y values; those are the inputs for the M3 4-point calibration.
+When the panel is pressed it prints more often and draws a red crosshair at the
+mapped screen position. The current panel calibration assumes this corner order:
+top-left, bottom-left, top-right, bottom-right. Expected mapped corners are
+`(0,0)`, `(0,479)`, `(319,0)` and `(319,479)`.
 
 ## OTA updates
 

@@ -34,16 +34,6 @@ uint16_t median3(uint16_t a, uint16_t b, uint16_t c) {
   return b;
 }
 
-int16_t mapRaw(uint16_t value, int16_t outMax) {
-  int32_t v = value;
-  if (v < 0) {
-    v = 0;
-  } else if (v > 4095) {
-    v = 4095;
-  }
-  return static_cast<int16_t>((v * outMax + 2047) / 4095);
-}
-
 }  // namespace
 
 bool Xpt2046Touch::begin() {
@@ -55,6 +45,11 @@ bool Xpt2046Touch::begin() {
   SPI1.setTX(config::kTouchMosi);
   SPI1.setRX(config::kTouchMiso);
   SPI1.begin();
+
+  // 4-point samples from the 4" panel on 2026-10-24. Raw X increases to the
+  // right; raw Y decreases toward the bottom of the portrait view.
+  cal_ = makeAxisCalibration(281, 3854, 3791, 300, 0, config::kScreenWidth - 1,
+                             0, config::kScreenHeight - 1);
 
   return true;
 }
@@ -111,34 +106,37 @@ bool Xpt2046Touch::readRaw(TouchRaw& out) {
   return true;
 }
 
-bool Xpt2046Touch::read(TouchPoint& out) {
-  TouchRaw raw;
-  if (!readRaw(raw)) {
+bool Xpt2046Touch::read(TouchPoint& out, TouchRaw& rawOut) {
+  if (!readRaw(rawOut)) {
     return false;
   }
 
-  if (!raw.pressed) {
+  if (!rawOut.pressed) {
     out = TouchPoint{};
     wasPressed_ = false;
     return true;
   }
 
-  const int16_t sx = mapRaw(raw.x, config::kScreenWidth - 1);
-  const int16_t sy = mapRaw(raw.y, config::kScreenHeight - 1);
+  const Point mapped = applyCalibration(cal_, rawOut.x, rawOut.y);
 
   if (!wasPressed_) {
-    emaX_ = sx;
-    emaY_ = sy;
+    emaX_ = mapped.x;
+    emaY_ = mapped.y;
     wasPressed_ = true;
   } else {
-    emaX_ = static_cast<int16_t>((emaX_ * 3 + sx) / 4);
-    emaY_ = static_cast<int16_t>((emaY_ * 3 + sy) / 4);
+    emaX_ = static_cast<int16_t>((emaX_ * 3 + mapped.x) / 4);
+    emaY_ = static_cast<int16_t>((emaY_ * 3 + mapped.y) / 4);
   }
 
   out.x = emaX_;
   out.y = emaY_;
   out.pressed = true;
   return true;
+}
+
+bool Xpt2046Touch::read(TouchPoint& out) {
+  TouchRaw raw;
+  return read(out, raw);
 }
 
 }  // namespace paint
