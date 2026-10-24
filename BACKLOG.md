@@ -55,7 +55,7 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - Measured M3 UI flushes: 44×44 top-bar button 1.85–1.98 ms; 288×36 toast 9.44 ms; sheet flushes 34.9–98.7 ms; full-screen transition 139.3 ms. `setSheet()` now dirties only the affected 44×44 button(s) instead of the whole 320×48 bar, saving ~12 ms per sheet transition. Details in `docs/performance.md`.
 - Git repository initialized (`main`); M1, M2, the M3 touch driver/UI shell and the M4 drawing engine are committed.
 
-**Next action:** connect the Pico and run the M4 hardware validation (stroke latency/fps, undo/redo feel, overlay transitions, HSV interaction, New confirmation, 5-minute heap stability), then record the timings in `docs/performance.md` and commit M4. The large palette/menu sheets still flush in 37–101 ms from M3; the HSV sheet is expected to be the largest overlay and should be measured first.
+**Next action:** connect the Pico and run the M4 hardware validation (stroke latency/fps, undo/redo feel, overlay transitions, HSV interaction, New confirmation, 5-minute heap stability), then record the timings in `docs/performance.md` and close M4-10. The M4 code is committed; M4-10 is the only open M4 item. The large palette/menu sheets still flush in 37–101 ms from M3; the HSV sheet is expected to be the largest overlay and should be measured first.
 
 ---
 
