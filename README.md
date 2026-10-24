@@ -6,20 +6,41 @@ The app runs in **portrait (320×480)** and is designed to work fully offline. W
 
 ## Status
 
-Milestone **M1** is hardware-verified (serial banner, 2 MB LittleFS, free heap).
-Milestone **M2** — ILI9488 driver, RGB565→RGB666 flush, graphics primitives and
-the diagnostics screen (since retired) — is hardware-verified: correct colours, upright portrait
-(rotation 2), stable 40 MHz SPI and a 139.3 ms full-screen flush. Milestone **M3**
-(touch input and UI shell) is hardware-verified: XPT2046/HR2046 driver, 4-point
-affine calibration, debounced touch state machine, and an immediate-mode UI with
-an 800 ms splash, canvas, 48 px top bar, tools/palette/brush-size/menu bottom
-sheets, toasts, and placeholder Gallery/Settings/About screens. Settings →
-**Calibrate touch** runs a four-crosshair guided calibration and saves the
-result to `/config.bin`; the saved transform is loaded on boot. This was
-verified on hardware: the first run saved the calibration and a reboot applied
-it. M3 is complete; the paint engine lands in M4–M6 and OTA lands in M7. See
+Milestones **M1–M3** are hardware-verified: serial banner and 2 MB LittleFS;
+the ILI9488 driver with RGB565→RGB666 flush, correct colours, upright portrait
+(rotation 2), stable 40 MHz SPI and a 139.3 ms full-screen flush; and the
+XPT2046/HR2046 touch stack with 4-point affine calibration, debounced gestures,
+an 800 ms splash, canvas, 48 px top bar, bottom sheets, toasts and placeholder
+Gallery/Settings/About screens. Settings → **Calibrate touch** saves its
+transform to `/config.bin` and reloads it on boot.
+
+**M4 (drawing engine)** is implemented and verified in the host preview and
+native tests; hardware timing/feel validation is pending because no Pico USB
+device was attached during the final pass. It includes:
+
+- A clipped RGB565 canvas over the main framebuffer, with dirty-rectangle
+  tracking and direct canvas flushes.
+- Round brush masks for 1/2/4/8/16/24/32 px, gap-free stroke interpolation,
+  brush and eraser strokes.
+- The 24-colour palette, five recent colours, and an HSV picker with a hue bar,
+  saturation/value square, live preview and Cancel/Use.
+- Compressed undo/redo: each action captures only the tiles it touches, stores
+  an RLE or raw "before" record, converts it to an XOR delta at commit, and
+  keeps up to 16 actions in a fixed pool. Typical strokes use a fraction of a
+  full tile snapshot, so ten normal undo levels fit more often; the oldest
+  action is evicted when the pool is full.
+- **Menu → New canvas** asks for confirmation, clears the drawing and undo
+  history, and keeps the toast/overlay paths pixel-safe.
+- A 320×32 overlay scratch band so sheets, toasts, Settings, Gallery and
+  calibration never destroy the canvas beneath them.
+
+M4 firmware builds are clean (`pico2w_usb` RAM 138,032 B / flash 419,576 B;
+`pico2w_ota` RAM 138,032 B / flash 419,576 B; `pico2w_diag` RAM 138,104 B /
+flash 420,352 B), and the native suite passes **40/40**. M5–M6 add the shape,
+fill and eyedropper tools plus storage/gallery; OTA lands in M7. See
 [`BACKLOG.md`](BACKLOG.md) for the full plan and
-[`docs/performance.md`](docs/performance.md) for benchmark results.
+[`docs/performance.md`](docs/performance.md) for the memory budget and
+benchmarks.
 
 ## Hardware
 
@@ -124,7 +145,7 @@ include/
   config.h              pins, dimensions, limits
   version.h             firmware version and build stamp
   secrets.example.h     Wi-Fi/OTA credentials template
-  paint/                canvas, colour, geometry, tools, undo, codec
+  paint/                canvas, brush, stroke, colour/HSV, undo, geometry, tools
   display/              ILI9488 driver and graphics primitives
   input/                touch abstraction and calibration
   storage/              LittleFS, settings, gallery
@@ -134,7 +155,7 @@ src/
   main.cpp              boot, filesystem, UI loop, heartbeat
   display/              ILI9488 driver and graphics primitives
   storage/              settings persistence (/config.bin)
-  ui/                   immediate-mode UI shell and 5×7 bitmap font
+  ui/                   immediate-mode UI, sheets/HSV picker, 5×7 bitmap font
 test/
   test_native/          host unit tests (Unity)
 docs/
@@ -149,7 +170,11 @@ docs/
 pio test -e native
 ```
 
-Pure logic (colour conversion, geometry, codec, calibration, undo bookkeeping) is kept Arduino-free so it can run on the host.
+The native environment builds the Arduino-free UI, graphics and font sources
+alongside the tests, so it exercises the real canvas/brush/undo code plus the
+UI flow (New confirmation, HSV picker, undo/redo requests). Pure logic (colour
+conversion, geometry, codec, calibration, undo bookkeeping) has no Arduino
+dependency and runs on the host.
 
 > Native tests need a host C++ toolchain (`gcc`/`g++`). On Windows, run them from WSL/Linux or install MinGW; the CI workflow runs them on Ubuntu.
 
@@ -158,4 +183,7 @@ Pure logic (colour conversion, geometry, codec, calibration, undo bookkeeping) i
 - The official `platformio/raspberrypi` platform only ships RP2040 boards. This project uses the RP2350-capable [maxgerhardt fork](https://github.com/maxgerhardt/platform-raspberrypi), pinned to a commit in `platformio.ini`.
 - The ILI9488 SPI interface only accepts 18-bit colour, so the firmware keeps an RGB565 framebuffer and expands to RGB666 during transfer.
 - Display MISO is deliberately not connected; touch uses a second SPI bus.
+- Undo history is a fixed ~64 KB in-object pool (44 RLE tiles + 7 raw tiles).
+  It is compressed per stroke and evicts the oldest action when full; **New
+  canvas** clears it.
 - Do not fill LittleFS with gallery images: OTA stages the new firmware there. The app keeps a free-space reserve.

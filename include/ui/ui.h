@@ -30,6 +30,8 @@ enum class Sheet : uint8_t {
   Palette,
   Size,
   Menu,
+  ConfirmNew,
+  Hsv,
 };
 
 enum class Tool : uint8_t {
@@ -78,6 +80,25 @@ constexpr Rect kSheetTools{0, 300, 320, 180};
 constexpr Rect kSheetPalette{0, 260, 320, 220};
 constexpr Rect kSheetSize{0, 360, 320, 120};
 constexpr Rect kSheetMenu{0, 140, 320, 340};
+constexpr Rect kSheetConfirmNew{0, 240, 320, 240};
+constexpr Rect kSheetHsv{0, 110, 320, 370};
+
+// HSV sheet controls.
+constexpr Rect kHsvPreview{20, 144, 56, 56};
+constexpr Rect kHsvHueBar{20, 222, 280, 24};
+constexpr Rect kHsvSquare{60, 268, 200, 140};
+constexpr Rect kHsvCancel{32, 428, 110, 36};
+constexpr Rect kHsvOk{178, 428, 110, 36};
+// Repaint bounds include the hue marker line, the S/V marker circles and the
+// text row. Dirtying these smaller rectangles avoids re-flushing the whole
+// 320x370 sheet for every tap.
+constexpr Rect kHsvReadout{88, 144, 220, 56};
+constexpr Rect kHsvHuePaint{20, 219, 280, 30};
+constexpr Rect kHsvSquarePaint{52, 260, 216, 156};
+
+// New-canvas confirmation controls.
+constexpr Rect kConfirmNewCancel{32, 404, 110, 44};
+constexpr Rect kConfirmNewOk{178, 404, 110, 44};
 
 constexpr Rect kToast{16, 428, 288, 36};
 
@@ -91,6 +112,10 @@ constexpr Rect sheetRect(Sheet sheet) {
       return kSheetSize;
     case Sheet::Menu:
       return kSheetMenu;
+    case Sheet::ConfirmNew:
+      return kSheetConfirmNew;
+    case Sheet::Hsv:
+      return kSheetHsv;
     default:
       return Rect{};
   }
@@ -134,6 +159,25 @@ constexpr Rect paletteSwatchRect(int index) {
 }
 
 constexpr Rect kPaletteHsvButton{244, 268, 60, 24};
+
+// Five recent colours live in the palette title row, between the title and
+// the HSV shortcut.
+constexpr int kRecentColorCount = 5;
+constexpr Rect paletteRecentRect(int index) {
+  if (index < 0 || index >= kRecentColorCount) {
+    return Rect{};
+  }
+  return Rect{static_cast<int16_t>(124 + index * 22), 272, 18, 18};
+}
+
+constexpr int hitPaletteRecent(Point p) {
+  for (int i = 0; i < kRecentColorCount; ++i) {
+    if (paletteRecentRect(i).contains(p)) {
+      return i;
+    }
+  }
+  return -1;
+}
 
 // Brush-size sheet: seven 36x36 cells.
 constexpr Rect sizeItemRect(int index) {
@@ -200,6 +244,8 @@ constexpr int sheetButton(Sheet sheet) {
       return 2;
     case Sheet::Menu:
       return 5;
+    case Sheet::Hsv:
+      return 2;
     default:
       return -1;
   }
@@ -218,6 +264,7 @@ class Ui {
   void begin(uint32_t nowMs);
   void update(const TouchFrame& frame, uint32_t nowMs);
   void render(uint16_t* fb, int fbWidth, const Rect& clip);
+  void compose(uint16_t* fb, int fbWidth, const Rect& clip);
 
   bool dirty() const { return !dirty_.empty(); }
   int dirtyCount() const { return dirty_.count(); }
@@ -230,6 +277,38 @@ class Ui {
   Tool tool() const { return tool_; }
   uint8_t brushSize() const { return brushSize_; }
   uint16_t color() const { return color_; }
+  bool toastVisible() const { return toastActive_; }
+
+  void setUndoRedoAvailable(bool canUndo, bool canRedo) {
+    if (undoAvailable_ != canUndo) {
+      undoAvailable_ = canUndo;
+      dirty_.add(ui_layout::kButtons[3]);
+    }
+    if (redoAvailable_ != canRedo) {
+      redoAvailable_ = canRedo;
+      dirty_.add(ui_layout::kButtons[4]);
+    }
+  }
+
+  bool takeUndoRequest() {
+    const bool value = undoRequested_;
+    undoRequested_ = false;
+    return value;
+  }
+
+  bool takeRedoRequest() {
+    const bool value = redoRequested_;
+    redoRequested_ = false;
+    return value;
+  }
+
+  bool takeNewCanvasRequest() {
+    const bool value = newCanvasRequested_;
+    newCanvasRequested_ = false;
+    return value;
+  }
+
+  void notify(const char* text, uint32_t nowMs) { showToast(text, nowMs); }
 
   // The main loop applies and persists a completed calibration, then calls
   // calibrationFinished() so the UI can show the result.
@@ -251,6 +330,8 @@ class Ui {
   void activateTopBar(int index, uint32_t nowMs);
   void handleCanvasTap(Point p, uint32_t nowMs);
   void activateSheetItem(Point p, uint32_t nowMs);
+  void openHsv();
+  void rememberColor(uint16_t color);
   void updatePlaceholder(const TouchFrame& frame);
   void startCalibration();
   void updateCalibration(const TouchFrame& frame, uint32_t nowMs);
@@ -273,6 +354,16 @@ class Ui {
   bool pressedCalibrate_ = false;
   bool touchCalibrated_ = false;
   bool toastActive_ = false;
+  bool undoAvailable_ = false;
+  bool redoAvailable_ = false;
+  bool undoRequested_ = false;
+  bool redoRequested_ = false;
+  bool newCanvasRequested_ = false;
+  uint8_t hsvH_ = 0;
+  uint8_t hsvS_ = 0;
+  uint8_t hsvV_ = 0;
+  uint16_t recentColors_[ui_layout::kRecentColorCount] = {};
+  uint8_t recentCount_ = 0;
   uint32_t toastUntil_ = 0;
   uint32_t splashUntil_ = 0;
   uint8_t calibrationStep_ = 0;

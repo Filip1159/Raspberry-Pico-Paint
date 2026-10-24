@@ -4,8 +4,12 @@
 #include "display/dirty.h"
 #include "input/calibration.h"
 #include "input/touch_state.h"
+#include "paint/brush.h"
+#include "paint/canvas.h"
 #include "paint/color.h"
 #include "paint/geometry.h"
+#include "paint/stroke.h"
+#include "paint/undo.h"
 #include "storage/settings_codec.h"
 #include "ui/font5x7.h"
 #include "ui/ui.h"
@@ -105,6 +109,548 @@ static void test_dirty_region_keeps_disjoint_rects() {
   dirty.add(makeRect(0, 0, 320, 480));
   TEST_ASSERT_EQUAL_INT(1, dirty.count());
   TEST_ASSERT_TRUE(dirty.rect(0) == makeRect(0, 0, 320, 480));
+}
+
+static uint16_t testFramebuffer[config::kScreenWidth * config::kScreenHeight];
+
+static Canvas testCanvas() {
+  Canvas canvas(testFramebuffer, config::kScreenWidth, ui_layout::kCanvas);
+  return canvas;
+}
+
+static void test_canvas_clips_to_bounds_and_tracks_dirty() {
+  Canvas canvas = testCanvas();
+  for (int i = 0; i < config::kScreenWidth * config::kScreenHeight; ++i) {
+    testFramebuffer[i] = 0;
+  }
+
+  canvas.clear(config::kPaperColor);
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, testFramebuffer[48 * config::kScreenWidth]);
+  TEST_ASSERT_EQUAL_HEX16(0, testFramebuffer[47 * config::kScreenWidth]);
+  TEST_ASSERT_TRUE(canvas.dirty());
+  TEST_ASSERT_TRUE(canvas.dirtyRect(0) == ui_layout::kCanvas);
+
+  canvas.clearDirty();
+  canvas.setPixel(0, 47, kRed);
+  TEST_ASSERT_EQUAL_HEX16(0, testFramebuffer[47 * config::kScreenWidth]);
+  TEST_ASSERT_FALSE(canvas.dirty());
+
+  canvas.setPixel(10, 50, kRed);
+  TEST_ASSERT_EQUAL_HEX16(kRed, canvas.pixel(10, 50));
+  TEST_ASSERT_TRUE(canvas.dirty());
+  TEST_ASSERT_TRUE(canvas.dirtyRect(0) == makeRect(10, 50, 1, 1));
+
+  canvas.clearDirty();
+  canvas.fillRect(makeRect(-10, 40, 30, 20), kBlue);
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(0, 48));
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(19, 59));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(20, 59));
+  TEST_ASSERT_TRUE(canvas.dirtyRect(0) == makeRect(0, 48, 20, 12));
+}
+
+static void test_brush_masks_are_round_and_symmetric() {
+  const int sizes[] = {1, 2, 4, 8, 16, 24, 32};
+  int previousCount = 0;
+
+  for (int size : sizes) {
+    const BrushMask& mask = brushMaskForSize(size);
+    TEST_ASSERT_EQUAL_INT(size, mask.diameter);
+    TEST_ASSERT_TRUE(mask.coverage != nullptr);
+    TEST_ASSERT_EQUAL_INT((size + 7) / 8, mask.stride);
+
+    int count = 0;
+    for (int y = 0; y < size; ++y) {
+      for (int x = 0; x < size; ++x) {
+        const bool on = mask.test(x, y);
+        TEST_ASSERT_EQUAL_INT(on, mask.test(size - 1 - x, y));
+        TEST_ASSERT_EQUAL_INT(on, mask.test(x, size - 1 - y));
+        if (on) {
+          ++count;
+        }
+      }
+    }
+    TEST_ASSERT_TRUE(count > previousCount);
+    TEST_ASSERT_TRUE(count <= size * size);
+    previousCount = count;
+  }
+
+  TEST_ASSERT_TRUE(brushMaskForSize(1).test(0, 0));
+  TEST_ASSERT_TRUE(brushMaskForSize(8).test(3, 3));
+  TEST_ASSERT_TRUE(brushMaskForSize(8).test(4, 4));
+  TEST_ASSERT_FALSE(brushMaskForSize(8).test(0, 0));
+  TEST_ASSERT_EQUAL_INT(32, brushMaskForSize(100).diameter);
+}
+
+static void test_brush_stamp_clips_and_marks_dirty() {
+  Canvas canvas = testCanvas();
+  canvas.clear(config::kPaperColor);
+  canvas.clearDirty();
+
+  const BrushMask& mask = brushMaskForSize(8);
+  stampBrush(canvas, mask, 100, 100, kRed);
+  TEST_ASSERT_EQUAL_HEX16(kRed, canvas.pixel(100, 100));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(96, 96));
+  TEST_ASSERT_TRUE(canvas.dirtyRect(0) == makeRect(96, 96, 8, 8));
+
+  canvas.clearDirty();
+  stampBrush(canvas, mask, 0, 48, kBlue);
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(0, 48));
+  TEST_ASSERT_TRUE(canvas.dirtyRect(0) == makeRect(0, 48, 4, 4));
+
+  canvas.clearDirty();
+  stampBrush(canvas, mask, 40, 20, kGreen);
+  TEST_ASSERT_FALSE(canvas.dirty());
+
+  canvas.clearDirty();
+  stampBrush(canvas, mask, 319, 479, kGreen);
+  TEST_ASSERT_EQUAL_HEX16(kGreen, canvas.pixel(319, 479));
+  TEST_ASSERT_TRUE(canvas.dirtyRect(0) == makeRect(315, 475, 5, 5));
+}
+
+static void test_stroke_is_continuous_and_clipped() {
+  Canvas canvas = testCanvas();
+  canvas.clear(config::kPaperColor);
+  canvas.clearDirty();
+
+  const BrushMask& thin = brushMaskForSize(1);
+  strokeBrush(canvas, thin, {10, 60}, {30, 70}, kBlack);
+  TEST_ASSERT_EQUAL_HEX16(kBlack, canvas.pixel(10, 60));
+  TEST_ASSERT_EQUAL_HEX16(kBlack, canvas.pixel(30, 70));
+
+  int marked = 0;
+  for (int x = 10; x <= 30; ++x) {
+    bool found = false;
+    for (int y = 60; y <= 70; ++y) {
+      if (canvas.pixel(x, y) == kBlack) {
+        found = true;
+        ++marked;
+      }
+    }
+    TEST_ASSERT_TRUE(found);
+  }
+  TEST_ASSERT_TRUE(marked >= 21);
+
+  canvas.clearDirty();
+  const BrushMask& thick = brushMaskForSize(8);
+  strokeBrush(canvas, thick, {50, 40}, {50, 100}, kRed);
+  TEST_ASSERT_EQUAL_HEX16(kRed, canvas.pixel(50, 48));
+  TEST_ASSERT_EQUAL_HEX16(kRed, canvas.pixel(50, 100));
+
+  canvas.clearDirty();
+  strokeBrush(canvas, thick, {310, 470}, {330, 490}, kBlue);
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(319, 479));
+  TEST_ASSERT_TRUE(canvas.dirty());
+  TEST_ASSERT_TRUE(canvas.dirtyRect(0).contains(319, 479));
+}
+
+static void test_stroke_controller_eraser_and_cancel() {
+  Canvas canvas = testCanvas();
+  canvas.clear(kRed);
+  canvas.clearDirty();
+
+  StrokeController stroke;
+  stroke.setCanvas(&canvas);
+  const BrushMask& mask = brushMaskForSize(16);
+  stroke.begin(mask, config::kPaperColor, {80, 120});
+  TEST_ASSERT_TRUE(stroke.active());
+  stroke.move({120, 120});
+  stroke.end({140, 140});
+  TEST_ASSERT_FALSE(stroke.active());
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(80, 120));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(120, 120));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(140, 140));
+
+  canvas.clearDirty();
+  stroke.setCanvas(&canvas);
+  stroke.begin(mask, kBlue, {200, 200});
+  stroke.move({220, 200});
+  stroke.cancel();
+  TEST_ASSERT_FALSE(stroke.active());
+  stroke.move({240, 200});
+  TEST_ASSERT_EQUAL_HEX16(kRed, canvas.pixel(240, 200));
+}
+
+
+static void test_undo_redo_round_trip() {
+  Canvas canvas = testCanvas();
+  canvas.clear(config::kPaperColor);
+  canvas.clearDirty();
+
+  UndoStack undo;
+  StrokeController stroke;
+  stroke.setCanvas(&canvas);
+  stroke.setUndo(&undo);
+
+  undo.beginAction();
+  const BrushMask& mask = brushMaskForSize(8);
+  stroke.begin(mask, kBlue, {100, 100});
+  stroke.move({140, 120});
+  stroke.end({160, 130});
+  TEST_ASSERT_TRUE(undo.commit());
+  TEST_ASSERT_TRUE(undo.canUndo());
+  TEST_ASSERT_FALSE(undo.canRedo());
+  TEST_ASSERT_EQUAL_INT(1, undo.undoDepth());
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(100, 100));
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(140, 120));
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(160, 130));
+
+  canvas.clearDirty();
+  TEST_ASSERT_TRUE(undo.undo(canvas));
+  TEST_ASSERT_FALSE(undo.canUndo());
+  TEST_ASSERT_TRUE(undo.canRedo());
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(100, 100));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(140, 120));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(160, 130));
+  TEST_ASSERT_TRUE(canvas.dirty());
+
+  TEST_ASSERT_TRUE(undo.redo(canvas));
+  TEST_ASSERT_TRUE(undo.canUndo());
+  TEST_ASSERT_FALSE(undo.canRedo());
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(100, 100));
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(160, 130));
+}
+
+static void test_undo_multiple_actions_and_new_action_discards_redo() {
+  Canvas canvas = testCanvas();
+  canvas.clear(config::kPaperColor);
+  canvas.clearDirty();
+
+  UndoStack undo;
+  StrokeController stroke;
+  stroke.setCanvas(&canvas);
+  stroke.setUndo(&undo);
+  const BrushMask& mask = brushMaskForSize(16);
+
+  for (int i = 0; i < 3; ++i) {
+    undo.beginAction();
+    const int y = 100 + i * 80;
+    stroke.begin(mask, kRed, {80, static_cast<int16_t>(y)});
+    stroke.end({120, static_cast<int16_t>(y)});
+    TEST_ASSERT_TRUE(undo.commit());
+  }
+  TEST_ASSERT_EQUAL_INT(3, undo.undoDepth());
+
+  TEST_ASSERT_TRUE(undo.undo(canvas));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(100, 260));
+  TEST_ASSERT_EQUAL_HEX16(kRed, canvas.pixel(100, 180));
+  TEST_ASSERT_EQUAL_INT(2, undo.undoDepth());
+  TEST_ASSERT_EQUAL_INT(1, undo.redoDepth());
+
+  TEST_ASSERT_TRUE(undo.undo(canvas));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(100, 180));
+  TEST_ASSERT_EQUAL_INT(1, undo.undoDepth());
+  TEST_ASSERT_EQUAL_INT(2, undo.redoDepth());
+
+  TEST_ASSERT_TRUE(undo.redo(canvas));
+  TEST_ASSERT_EQUAL_HEX16(kRed, canvas.pixel(100, 180));
+  TEST_ASSERT_TRUE(undo.redo(canvas));
+  TEST_ASSERT_EQUAL_HEX16(kRed, canvas.pixel(100, 260));
+  TEST_ASSERT_FALSE(undo.redo(canvas));
+
+  TEST_ASSERT_TRUE(undo.undo(canvas));
+  undo.beginAction();
+  stroke.begin(mask, kGreen, {200, 100});
+  stroke.end({240, 100});
+  TEST_ASSERT_TRUE(undo.commit());
+  TEST_ASSERT_FALSE(undo.canRedo());
+  TEST_ASSERT_EQUAL_INT(3, undo.undoDepth());
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(100, 260));
+}
+
+static void test_undo_compressed_deltas_keep_ten_actions() {
+  Canvas canvas = testCanvas();
+  canvas.clear(config::kPaperColor);
+  canvas.clearDirty();
+
+  UndoStack undo;
+  StrokeController stroke;
+  stroke.setCanvas(&canvas);
+  stroke.setUndo(&undo);
+  const BrushMask& mask = brushMaskForSize(8);
+
+  // Each stroke spans four 32x32 tiles. Ten such actions need 40 tile
+  // records, more than the old 30-record raw pool could hold.
+  for (int i = 0; i < 10; ++i) {
+    undo.beginAction();
+    const int y = 64 + i * 36;
+    stroke.begin(mask, kBlue, {30, static_cast<int16_t>(y)});
+    stroke.end({110, static_cast<int16_t>(y)});
+    TEST_ASSERT_TRUE(undo.commit());
+  }
+  TEST_ASSERT_EQUAL_INT(10, undo.undoDepth());
+
+  for (int i = 0; i < 10; ++i) {
+    TEST_ASSERT_TRUE(undo.undo(canvas));
+  }
+  TEST_ASSERT_FALSE(undo.canUndo());
+  TEST_ASSERT_EQUAL_INT(10, undo.redoDepth());
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(70, 64 + 5 * 36));
+
+  for (int i = 0; i < 10; ++i) {
+    TEST_ASSERT_TRUE(undo.redo(canvas));
+  }
+  TEST_ASSERT_TRUE(undo.canUndo());
+  TEST_ASSERT_FALSE(undo.canRedo());
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(70, 64 + 5 * 36));
+}
+
+static void test_undo_raw_tile_fallback() {
+  Canvas canvas = testCanvas();
+  canvas.clear(config::kPaperColor);
+  for (int y = 64; y < 96; ++y) {
+    for (int x = 0; x < 32; ++x) {
+      canvas.setPixel(x, y, ((x + y) & 1) ? kRed : kGreen);
+    }
+  }
+  canvas.clearDirty();
+  const uint16_t before = canvas.pixel(10, 70);
+
+  UndoStack undo;
+  StrokeController stroke;
+  stroke.setCanvas(&canvas);
+  stroke.setUndo(&undo);
+  const BrushMask& mask = brushMaskForSize(8);
+
+  undo.beginAction();
+  stroke.begin(mask, kBlue, {6, 72});
+  stroke.end({26, 72});
+  TEST_ASSERT_TRUE(undo.commit());
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(10, 70));
+
+  TEST_ASSERT_TRUE(undo.undo(canvas));
+  TEST_ASSERT_EQUAL_HEX16(before, canvas.pixel(10, 70));
+  TEST_ASSERT_TRUE(undo.redo(canvas));
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(10, 70));
+}
+
+static void test_undo_handles_canvas_bottom_and_clear() {
+  Canvas canvas = testCanvas();
+  canvas.clear(config::kPaperColor);
+  canvas.clearDirty();
+
+  UndoStack undo;
+  StrokeController stroke;
+  stroke.setCanvas(&canvas);
+  stroke.setUndo(&undo);
+  const BrushMask& mask = brushMaskForSize(24);
+
+  undo.beginAction();
+  stroke.begin(mask, kGreen, {160, 470});
+  stroke.end({170, 478});
+  TEST_ASSERT_TRUE(undo.commit());
+  TEST_ASSERT_EQUAL_HEX16(kGreen, canvas.pixel(160, 470));
+
+  TEST_ASSERT_TRUE(undo.undo(canvas));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(160, 470));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(170, 478));
+
+  undo.clear();
+  TEST_ASSERT_FALSE(undo.canUndo());
+  TEST_ASSERT_FALSE(undo.canRedo());
+}
+
+
+static void test_hsv_color_round_trip() {
+  TEST_ASSERT_EQUAL_HEX16(kRed, hsvToRgb565(0, 255, 255));
+  TEST_ASSERT_EQUAL_HEX16(kGreen, hsvToRgb565(85, 255, 255));
+  TEST_ASSERT_EQUAL_HEX16(kBlue, hsvToRgb565(171, 255, 255));
+  TEST_ASSERT_EQUAL_HEX16(kBlack, hsvToRgb565(0, 0, 0));
+  TEST_ASSERT_EQUAL_HEX16(kWhite, hsvToRgb565(0, 0, 255));
+
+  const Hsv red = rgb565ToHsv(kRed);
+  TEST_ASSERT_UINT8_WITHIN(2, 0, red.h);
+  TEST_ASSERT_EQUAL_UINT8(255, red.s);
+  TEST_ASSERT_EQUAL_UINT8(255, red.v);
+
+  const Hsv green = rgb565ToHsv(kGreen);
+  TEST_ASSERT_UINT8_WITHIN(2, 85, green.h);
+  TEST_ASSERT_EQUAL_UINT8(255, green.s);
+  TEST_ASSERT_EQUAL_UINT8(255, green.v);
+
+  const Hsv blue = rgb565ToHsv(kBlue);
+  TEST_ASSERT_UINT8_WITHIN(2, 171, blue.h);
+  TEST_ASSERT_EQUAL_UINT8(255, blue.s);
+  TEST_ASSERT_EQUAL_UINT8(255, blue.v);
+
+  const Hsv gray = rgb565ToHsv(rgb565(128, 128, 128));
+  TEST_ASSERT_TRUE(gray.s <= 4);
+  TEST_ASSERT_UINT8_WITHIN(3, 132, gray.v);
+}
+
+static void test_ui_layout_new_sheets_and_recent_colors() {
+  TEST_ASSERT_EQUAL_INT(config::kScreenHeight,
+                        ui_layout::sheetRect(Sheet::ConfirmNew).bottom());
+  TEST_ASSERT_EQUAL_INT(config::kScreenHeight,
+                        ui_layout::sheetRect(Sheet::Hsv).bottom());
+  TEST_ASSERT_EQUAL_INT(-1, ui_layout::sheetButton(Sheet::ConfirmNew));
+  TEST_ASSERT_EQUAL_INT(2, ui_layout::sheetButton(Sheet::Hsv));
+
+  const Rect hsvSheet = ui_layout::sheetRect(Sheet::Hsv);
+  const Rect controls[] = {
+      ui_layout::kHsvHueBar, ui_layout::kHsvSquare, ui_layout::kHsvPreview,
+      ui_layout::kHsvCancel, ui_layout::kHsvOk, ui_layout::kHsvReadout,
+      ui_layout::kHsvHuePaint, ui_layout::kHsvSquarePaint,
+  };
+  for (const Rect& r : controls) {
+    TEST_ASSERT_TRUE(hsvSheet.contains({r.x, r.y}));
+    TEST_ASSERT_TRUE(hsvSheet.contains(
+        {static_cast<int16_t>(r.right() - 1),
+         static_cast<int16_t>(r.bottom() - 1)}));
+  }
+  TEST_ASSERT_TRUE(ui_layout::kHsvReadout.intersect(ui_layout::kHsvPreview).empty());
+  TEST_ASSERT_TRUE(ui_layout::kHsvHuePaint.contains(
+      {static_cast<int16_t>(ui_layout::kHsvHueBar.x),
+       static_cast<int16_t>(ui_layout::kHsvHueBar.y - 3)}));
+  TEST_ASSERT_TRUE(ui_layout::kHsvSquarePaint.contains(
+      {static_cast<int16_t>(ui_layout::kHsvSquare.x),
+       static_cast<int16_t>(ui_layout::kHsvSquare.y)}));
+  TEST_ASSERT_TRUE(ui_layout::kHsvSquare.intersect(ui_layout::kHsvOk).empty());
+  TEST_ASSERT_TRUE(ui_layout::kHsvSquare.bottom() <= ui_layout::kHsvCancel.y);
+
+  for (int i = 0; i < ui_layout::kRecentColorCount; ++i) {
+    const Rect r = ui_layout::paletteRecentRect(i);
+    const Rect sheet = ui_layout::sheetRect(Sheet::Palette);
+    TEST_ASSERT_TRUE(sheet.contains({r.x, r.y}));
+    TEST_ASSERT_TRUE(sheet.contains(
+        {static_cast<int16_t>(r.right() - 1),
+         static_cast<int16_t>(r.bottom() - 1)}));
+    TEST_ASSERT_TRUE(r.intersect(ui_layout::kPaletteHsvButton).empty());
+    TEST_ASSERT_EQUAL_INT(i, ui_layout::hitPaletteRecent(
+                                 {static_cast<int16_t>(r.x + 1),
+                                  static_cast<int16_t>(r.y + 1)}));
+  }
+  TEST_ASSERT_EQUAL_INT(-1, ui_layout::hitPaletteRecent({123, 280}));
+}
+
+static void uiTap(Ui& ui, int x, int y, uint32_t nowMs) {
+  TouchFrame down;
+  down.pressed = true;
+  down.down = true;
+  down.x = static_cast<int16_t>(x);
+  down.y = static_cast<int16_t>(y);
+  down.startX = down.x;
+  down.startY = down.y;
+  ui.update(down, nowMs);
+
+  TouchFrame up;
+  up.up = true;
+  up.tap = true;
+  up.x = down.x;
+  up.y = down.y;
+  up.startX = down.x;
+  up.startY = down.y;
+  up.durationMs = 40;
+  ui.update(up, nowMs + 40);
+}
+
+static void test_ui_new_canvas_confirmation_flow() {
+  Ui ui;
+  ui.begin(0);
+  ui.update(TouchFrame{}, 900);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Canvas),
+                        static_cast<int>(ui.screen()));
+
+  uiTap(ui, 280, 24, 1000);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::Menu),
+                        static_cast<int>(ui.sheet()));
+
+  uiTap(ui, 160, 198, 1200);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::ConfirmNew),
+                        static_cast<int>(ui.sheet()));
+
+  uiTap(ui, 87, 426, 1400);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::None),
+                        static_cast<int>(ui.sheet()));
+  TEST_ASSERT_FALSE(ui.takeNewCanvasRequest());
+
+  uiTap(ui, 280, 24, 1600);
+  uiTap(ui, 160, 198, 1800);
+  uiTap(ui, 233, 426, 2000);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::None),
+                        static_cast<int>(ui.sheet()));
+  TEST_ASSERT_TRUE(ui.takeNewCanvasRequest());
+  TEST_ASSERT_FALSE(ui.takeNewCanvasRequest());
+}
+
+static void test_ui_hsv_picker_flow() {
+  Ui ui;
+  ui.begin(0);
+  ui.update(TouchFrame{}, 900);
+
+  uiTap(ui, 136, 24, 1000);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::Palette),
+                        static_cast<int>(ui.sheet()));
+  uiTap(ui, 274, 280, 1200);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::Hsv),
+                        static_cast<int>(ui.sheet()));
+
+  const uint16_t before = ui.color();
+  uiTap(ui, 200, 234, 1400);
+  uiTap(ui, 200, 330, 1600);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::Hsv),
+                        static_cast<int>(ui.sheet()));
+  uiTap(ui, 233, 446, 1800);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::None),
+                        static_cast<int>(ui.sheet()));
+  TEST_ASSERT_TRUE(ui.color() != before);
+  TEST_ASSERT_TRUE(ui.color() != kBlack);
+  TEST_ASSERT_TRUE(ui.color() != kWhite);
+
+  uiTap(ui, 136, 24, 2000);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::Palette),
+                        static_cast<int>(ui.sheet()));
+  uiTap(ui, 274, 280, 2200);
+  uiTap(ui, 87, 446, 2400);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::None),
+                        static_cast<int>(ui.sheet()));
+  TEST_ASSERT_TRUE(ui.color() != before);
+}
+
+static void test_ui_hsv_tap_dirty_bounds() {
+  Ui ui;
+  ui.begin(0);
+  ui.update(TouchFrame{}, 900);
+
+  uiTap(ui, 136, 24, 1000);
+  uiTap(ui, 274, 280, 1200);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::Hsv),
+                        static_cast<int>(ui.sheet()));
+
+  ui.clearDirty();
+  uiTap(ui, 200, 234, 1400);  // hue bar
+  TEST_ASSERT_EQUAL_INT(4, ui.dirtyCount());
+  for (int i = 0; i < ui.dirtyCount(); ++i) {
+    const Rect r = ui.dirtyRect(i);
+    TEST_ASSERT_TRUE(r.w < ui_layout::kSheetHsv.w ||
+                     r.h < ui_layout::kSheetHsv.h);
+    TEST_ASSERT_TRUE(ui_layout::kSheetHsv.contains({r.x, r.y}));
+    TEST_ASSERT_TRUE(ui_layout::kSheetHsv.contains(
+        {static_cast<int16_t>(r.right() - 1),
+         static_cast<int16_t>(r.bottom() - 1)}));
+  }
+
+  ui.clearDirty();
+  uiTap(ui, 200, 330, 1600);  // saturation/value square
+  TEST_ASSERT_EQUAL_INT(3, ui.dirtyCount());
+}
+
+static void test_ui_undo_requests_and_availability() {
+  Ui ui;
+  ui.begin(0);
+  ui.update(TouchFrame{}, 900);
+
+  uiTap(ui, 184, 24, 1000);
+  TEST_ASSERT_FALSE(ui.takeUndoRequest());
+  TEST_ASSERT_FALSE(ui.takeRedoRequest());
+
+  ui.setUndoRedoAvailable(true, true);
+  uiTap(ui, 184, 24, 1200);
+  TEST_ASSERT_TRUE(ui.takeUndoRequest());
+  TEST_ASSERT_FALSE(ui.takeUndoRequest());
+
+  uiTap(ui, 232, 24, 1400);
+  TEST_ASSERT_TRUE(ui.takeRedoRequest());
+  TEST_ASSERT_FALSE(ui.takeRedoRequest());
 }
 
 static Calibration panelCalibration() {
@@ -449,6 +995,16 @@ int main(int, char**) {
   RUN_TEST(test_canvas_dimensions);
   RUN_TEST(test_dirty_region_merges_and_clears);
   RUN_TEST(test_dirty_region_keeps_disjoint_rects);
+  RUN_TEST(test_canvas_clips_to_bounds_and_tracks_dirty);
+  RUN_TEST(test_brush_masks_are_round_and_symmetric);
+  RUN_TEST(test_brush_stamp_clips_and_marks_dirty);
+  RUN_TEST(test_stroke_is_continuous_and_clipped);
+  RUN_TEST(test_stroke_controller_eraser_and_cancel);
+  RUN_TEST(test_undo_redo_round_trip);
+  RUN_TEST(test_undo_multiple_actions_and_new_action_discards_redo);
+  RUN_TEST(test_undo_compressed_deltas_keep_ten_actions);
+  RUN_TEST(test_undo_raw_tile_fallback);
+  RUN_TEST(test_undo_handles_canvas_bottom_and_clear);
   RUN_TEST(test_touch_calibration_corners);
   RUN_TEST(test_touch_calibration_center_and_clamp);
   RUN_TEST(test_touch_calibration_plausibility);
@@ -464,5 +1020,11 @@ int main(int, char**) {
   RUN_TEST(test_ui_layout_sheet_buttons);
   RUN_TEST(test_ui_layout_calibration);
   RUN_TEST(test_ui_layout_sheet_hits);
+  RUN_TEST(test_hsv_color_round_trip);
+  RUN_TEST(test_ui_layout_new_sheets_and_recent_colors);
+  RUN_TEST(test_ui_new_canvas_confirmation_flow);
+  RUN_TEST(test_ui_hsv_picker_flow);
+  RUN_TEST(test_ui_hsv_tap_dirty_bounds);
+  RUN_TEST(test_ui_undo_requests_and_availability);
   return UNITY_END();
 }

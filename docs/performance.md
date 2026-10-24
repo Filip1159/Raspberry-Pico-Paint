@@ -2,19 +2,42 @@
 
 ## Build footprint
 
-Measured 2026-10-24 with the pinned RP2350 platform:
+Measured 2026-10-24 with the pinned RP2350 platform (M4 build):
 
 | Environment | RAM | Flash |
 |---|---:|---:|
-| `pico2w_usb` | 72,768 B (13.9%) | 346,872 B (16.6%) |
-| `pico2w_ota` | 72,768 B (13.9%) | 346,864 B (16.6%) |
-| `pico2w_diag` | 72,840 B (13.9%) | 347,384 B (16.6%) |
+| `pico2w_usb` | 138,032 B (26.3%) | 419,576 B (20.0%) |
+| `pico2w_ota` | 138,032 B (26.3%) | 419,576 B (20.0%) |
+| `pico2w_diag` | 138,104 B (26.3%) | 420,352 B (20.1%) |
 
 The 320×480 RGB565 framebuffer is allocated from the heap at boot
-(307,200 B). The M1 firmware reported 452,472 B free before that allocation.
-After the framebuffer allocation, the M3 calibration build reports **142,688 B
-free** (allocator overhead included; the reboot build reported 142,760 B; M2
-reported 143,360 B).
+(307,200 B), and the overlay scratch is a 320×32 band (20,480 B). The M4
+static RAM figure includes the fixed undo pool and UI state. The expected
+free heap after both allocations is:
+
+```
+524,288 - 138,032 (static) - 307,200 (framebuffer) - 20,480 (scratch)
+= 58,576 B
+```
+
+This is a budget estimate; the boot `[mem] free heap` line must be recorded on
+hardware once the Pico is connected. For comparison, the pre-undo M3
+calibration build reported **142,688 B free after the framebuffer** (allocator
+overhead included; the reboot build reported 142,760 B; M2 reported 143,360 B).
+The M4 undo pool costs about 64 KB of static RAM:
+
+| Undo component | Bytes |
+|---|---:|
+| 44 RLE tile records × 1,024 | 45,056 |
+| 7 raw tile records × 2,048 | 14,336 |
+| Records, actions, refs, scratch | ≈ 4,700 |
+
+The pool holds up to 16 actions and 32 tile records per action. Each action
+captures the "before" pixels of the tiles it touches (RLE when compressible),
+then converts them to XOR deltas at commit. Undo/redo XOR the same delta, so
+one record serves both directions. The oldest action is evicted when either
+pool fills; a single action that cannot be captured sets the overflow flag and
+shows "Stroke too large to undo" instead of corrupting history.
 
 ## M2 display benchmarks
 
@@ -71,8 +94,10 @@ per-event `[ui] flush` timings.
 
 ## M3 UI shell flushes
 
-The UI composes the whole screen into the RGB565 framebuffer on each dirty
-event, then flushes the accumulated dirty rectangles:
+The UI composes each dirty region into the shared RGB565 framebuffer, then
+flushes the accumulated dirty rectangles. The M3 numbers below were taken
+before the M4 overlay-band path; M4 reuses the same clipping/compose rules and
+adds the 320×32 scratch band for opaque overlays:
 
 | Event | Dirty regions | Measured on hardware |
 |---|---|---|
@@ -89,8 +114,10 @@ event, then flushes the accumulated dirty rectangles:
 The sheet times are the measured `[ui] flush` values plus the measured ~1.9 ms
 button flush. The first hardware run marked the whole 320×48 top bar on a sheet
 change, which cost ~13.9 ms; `Ui::setSheet()` now dirties only the old and new
-sheet buttons, so the top-bar contribution is the normal button cost. Switching
-directly between two sheets flushes two buttons plus both sheets.
+sheet buttons, so the top-bar contribution is the normal button cost. When one
+sheet fully contains the other (for example Palette → HSV, or Menu → New
+canvas), only the larger sheet rectangle is marked; otherwise both sheet
+rectangles are.
 
 The `DirtyRegion` keeps up to eight disjoint rectangles separate, so the top bar
 and a bottom sheet are flushed independently rather than as one full-screen
@@ -108,6 +135,38 @@ crisp.
 
 Keep the fastest stable SPI clock in `include/config.h` (`kDisplaySpiHz`); if
 40 MHz shows corruption, fall back to 27 MHz and note it here.
+
+## M4 drawing and undo
+
+The drawing engine and UI flows are validated on the host (320×480 RGB565
+preview) and by the native suite, but the hardware timing pass is still open:
+no Pico USB device was attached during the final M4 pass. The following need
+to be measured and added here:
+
+| Metric | Target | Status |
+|---|---:|---|
+| 8 px brush continuous stroke | ≥30 fps | pending hardware |
+| Stroke-to-pixel latency | <40 ms | pending hardware |
+| 1/8/24 px brush frame times | record | pending hardware |
+| Undo high-water memory / retained levels | 10 normal levels | pending hardware |
+| HSV sheet open/close and tap repaint | <50 ms UI interaction | pending hardware |
+| New-canvas confirmation transition | <50 ms UI interaction | pending hardware |
+| Free heap after 5 minutes of drawing | stable | pending hardware |
+
+The deterministic parts are covered by `pio test -e native` (40/40): canvas
+clipping and dirty tracking, brush continuity, eraser/cancel, compressed and
+raw undo deltas, ten-action retention across 40 tile records, HSV conversion,
+HSV tap dirty bounds, New-canvas confirmation and undo/redo request handling.
+
+The overlay path was introduced in M4. Sheets, toasts, Settings, Gallery and
+calibration compose into a 320-pixel-wide, 32-row scratch band, flush that
+band, then restore the canvas pixels underneath. The cost is roughly the same
+SPI payload as a normal dirty rectangle plus the compose work, but the canvas
+is never destroyed. The HSV sheet is the largest new overlay
+(320×370) and should be measured first on hardware. HSV taps dirty only the
+hue paint bounds, the S/V square plus marker, the preview and the readout; the
+square/hue painters skip cells outside the clip, so an adjustment does not
+re-flush the entire sheet.
 
 ## Other targets
 

@@ -177,6 +177,67 @@ void drawToolIcon(uint16_t* fb, int fbWidth, const Rect& clip, const Rect& r,
   }
 }
 
+bool rectContains(const Rect& outer, const Rect& inner) {
+  return !outer.empty() && !inner.empty() && inner.x >= outer.x &&
+         inner.y >= outer.y && inner.right() <= outer.right() &&
+         inner.bottom() <= outer.bottom();
+}
+
+void drawHsvHueBar(uint16_t* fb, int fbWidth, const Rect& clip, const Rect& bar,
+                   uint8_t hue) {
+  constexpr int segments = 32;
+  for (int i = 0; i < segments; ++i) {
+    const int x0 = bar.x + (i * bar.w) / segments;
+    const int x1 = bar.x + ((i + 1) * bar.w) / segments;
+    const Rect cell{static_cast<int16_t>(x0), bar.y,
+                    static_cast<int16_t>(x1 - x0), bar.h};
+    if (cell.intersect(clip).empty()) {
+      continue;
+    }
+    const uint8_t h = static_cast<uint8_t>((i * 255) / (segments - 1));
+    gfx::fillRect(fb, fbWidth, clip, cell, hsvToRgb565(h, 255, 255));
+  }
+  gfx::drawRect(fb, fbWidth, clip, bar, kButtonBorder);
+
+  const int markerX = bar.x + (hue * (bar.w - 1)) / 255;
+  gfx::vline(fb, fbWidth, clip, markerX, bar.y - 3, bar.h + 6, kWhite);
+  gfx::vline(fb, fbWidth, clip, markerX + 1, bar.y - 3, bar.h + 6, kBlack);
+}
+
+void drawHsvSquare(uint16_t* fb, int fbWidth, const Rect& clip, const Rect& square,
+                   uint8_t hue, uint8_t saturation, uint8_t value) {
+  constexpr int columns = 64;
+  constexpr int rows = 48;
+  for (int row = 0; row < rows; ++row) {
+    const int y0 = square.y + (row * square.h) / rows;
+    const int y1 = square.y + ((row + 1) * square.h) / rows;
+    const uint8_t v = static_cast<uint8_t>(255 - (row * 255) / (rows - 1));
+    for (int column = 0; column < columns; ++column) {
+      const int x0 = square.x + (column * square.w) / columns;
+      const int x1 = square.x + ((column + 1) * square.w) / columns;
+      const Rect cell{static_cast<int16_t>(x0), static_cast<int16_t>(y0),
+                      static_cast<int16_t>(x1 - x0),
+                      static_cast<int16_t>(y1 - y0)};
+      if (cell.intersect(clip).empty()) {
+        continue;
+      }
+      const uint8_t s =
+          static_cast<uint8_t>((column * 255) / (columns - 1));
+      gfx::fillRect(fb, fbWidth, clip, cell, hsvToRgb565(hue, s, v));
+    }
+  }
+  gfx::drawRect(fb, fbWidth, clip, square, kButtonBorder);
+
+  const int markerX = square.x + (saturation * (square.w - 1)) / 255;
+  const int markerY = square.y + ((255 - value) * (square.h - 1)) / 255;
+  gfx::drawCircle(fb, fbWidth, clip,
+                  {static_cast<int16_t>(markerX), static_cast<int16_t>(markerY)}, 7,
+                  kWhite);
+  gfx::drawCircle(fb, fbWidth, clip,
+                  {static_cast<int16_t>(markerX), static_cast<int16_t>(markerY)}, 8,
+                  kBlack);
+}
+
 }  // namespace
 
 void Ui::begin(uint32_t nowMs) {
@@ -192,6 +253,18 @@ void Ui::begin(uint32_t nowMs) {
   calibrationStep_ = 0;
   calibrationComplete_ = false;
   toastActive_ = false;
+  undoAvailable_ = false;
+  redoAvailable_ = false;
+  undoRequested_ = false;
+  redoRequested_ = false;
+  newCanvasRequested_ = false;
+  hsvH_ = 0;
+  hsvS_ = 0;
+  hsvV_ = 0;
+  recentCount_ = 0;
+  for (int i = 0; i < ui_layout::kRecentColorCount; ++i) {
+    recentColors_[i] = 0;
+  }
   toastUntil_ = 0;
   splashUntil_ = nowMs + 800;
   toast_[0] = '\0';
@@ -234,11 +307,22 @@ void Ui::setSheet(Sheet next) {
   const Rect oldRect = ui_layout::sheetRect(sheet_);
   const Rect newRect = ui_layout::sheetRect(next);
   sheet_ = next;
-  if (!oldRect.empty()) {
-    dirty_.add(oldRect);
-  }
-  if (!newRect.empty()) {
-    dirty_.add(newRect);
+  if (oldRect == newRect) {
+    if (!newRect.empty()) {
+      dirty_.add(newRect);
+    }
+  } else {
+    // When one sheet fully covers the other, repainting only the larger rect is
+    // enough. This avoids a redundant second pass when Palette opens HSV (the
+    // HSV sheet contains the palette) and when HSV returns to Palette.
+    const bool oldInsideNew = rectContains(newRect, oldRect);
+    const bool newInsideOld = rectContains(oldRect, newRect);
+    if (!oldRect.empty() && !oldInsideNew) {
+      dirty_.add(oldRect);
+    }
+    if (!newRect.empty() && !newInsideOld) {
+      dirty_.add(newRect);
+    }
   }
 }
 
@@ -261,12 +345,20 @@ void Ui::activateTopBar(int index, uint32_t nowMs) {
       setSheet(sheet_ == Sheet::Palette ? Sheet::None : Sheet::Palette);
       break;
     case 3:
-      setSheet(Sheet::None);
-      showToast("Undo lands in M4", nowMs);
+      if (undoAvailable_) {
+        setSheet(Sheet::None);
+        undoRequested_ = true;
+      } else {
+        showToast("Nothing to undo", nowMs);
+      }
       break;
     case 4:
-      setSheet(Sheet::None);
-      showToast("Redo lands in M4", nowMs);
+      if (redoAvailable_) {
+        setSheet(Sheet::None);
+        redoRequested_ = true;
+      } else {
+        showToast("Nothing to redo", nowMs);
+      }
       break;
     case 5:
       setSheet(sheet_ == Sheet::Menu ? Sheet::None : Sheet::Menu);
@@ -300,17 +392,25 @@ void Ui::activateSheetItem(Point p, uint32_t nowMs) {
         showToast(kToolNames[item], nowMs);
       }
       break;
-    case Sheet::Palette:
+    case Sheet::Palette: {
+      const int recent = ui_layout::hitPaletteRecent(p);
       if (ui_layout::hitPaletteHsv(p)) {
+        openHsv();
+      } else if (recent >= 0 && recent < recentCount_) {
+        color_ = recentColors_[recent];
+        rememberColor(color_);
+        dirty_.add(ui_layout::kButtons[2]);
         setSheet(Sheet::None);
-        showToast("HSV picker lands in M4", nowMs);
+        showToast("Colour selected", nowMs);
       } else if (item >= 0 && item < ui_layout::kPaletteCount) {
         color_ = ui_layout::kPalette[item];
+        rememberColor(color_);
         dirty_.add(ui_layout::kButtons[2]);
         setSheet(Sheet::None);
         showToast("Colour selected", nowMs);
       }
       break;
+    }
     case Sheet::Size:
       if (item >= 0 && item < ui_layout::kBrushSizeCount) {
         brushSize_ = ui_layout::kBrushSizes[item];
@@ -323,34 +423,126 @@ void Ui::activateSheetItem(Point p, uint32_t nowMs) {
       break;
     case Sheet::Menu:
       if (item >= 0 && item < 6) {
-        setSheet(Sheet::None);
-        switch (item) {
-          case 0:
-            showToast("New canvas lands in M4", nowMs);
-            break;
-          case 1:
-            showToast("Save lands in M6", nowMs);
-            break;
-          case 2:
-            setScreen(Screen::Gallery);
-            break;
-          case 3:
-            setScreen(Screen::Settings);
-            break;
-          case 4:
-            showToast("Wi-Fi & OTA lands in M7", nowMs);
-            break;
-          case 5:
-            setScreen(Screen::About);
-            break;
-          default:
-            break;
+        if (item == 0) {
+          setSheet(Sheet::ConfirmNew);
+        } else {
+          setSheet(Sheet::None);
+          switch (item) {
+            case 1:
+              showToast("Save lands in M6", nowMs);
+              break;
+            case 2:
+              setScreen(Screen::Gallery);
+              break;
+            case 3:
+              setScreen(Screen::Settings);
+              break;
+            case 4:
+              showToast("Wi-Fi & OTA lands in M7", nowMs);
+              break;
+            case 5:
+              setScreen(Screen::About);
+              break;
+            default:
+              break;
+          }
         }
+      }
+      break;
+    case Sheet::ConfirmNew:
+      if (ui_layout::kConfirmNewCancel.contains(p)) {
+        setSheet(Sheet::None);
+      } else if (ui_layout::kConfirmNewOk.contains(p)) {
+        setSheet(Sheet::None);
+        newCanvasRequested_ = true;
+      }
+      break;
+    case Sheet::Hsv:
+      if (ui_layout::kHsvCancel.contains(p)) {
+        setSheet(Sheet::None);
+      } else if (ui_layout::kHsvOk.contains(p)) {
+        color_ = hsvToRgb565(hsvH_, hsvS_, hsvV_);
+        rememberColor(color_);
+        dirty_.add(ui_layout::kButtons[2]);
+        setSheet(Sheet::None);
+        showToast("Colour selected", nowMs);
+      } else if (ui_layout::kHsvHueBar.contains(p)) {
+        int hue = ((p.x - ui_layout::kHsvHueBar.x) * 255) /
+                  (ui_layout::kHsvHueBar.w - 1);
+        if (hue < 0) {
+          hue = 0;
+        }
+        if (hue > 255) {
+          hue = 255;
+        }
+        hsvH_ = static_cast<uint8_t>(hue);
+        dirty_.add(ui_layout::kHsvHuePaint);
+        dirty_.add(ui_layout::kHsvSquarePaint);
+        dirty_.add(ui_layout::kHsvPreview);
+        dirty_.add(ui_layout::kHsvReadout);
+      } else if (ui_layout::kHsvSquare.contains(p)) {
+        int saturation = ((p.x - ui_layout::kHsvSquare.x) * 255) /
+                         (ui_layout::kHsvSquare.w - 1);
+        int value = 255 - ((p.y - ui_layout::kHsvSquare.y) * 255) /
+                               (ui_layout::kHsvSquare.h - 1);
+        if (saturation < 0) {
+          saturation = 0;
+        }
+        if (saturation > 255) {
+          saturation = 255;
+        }
+        if (value < 0) {
+          value = 0;
+        }
+        if (value > 255) {
+          value = 255;
+        }
+        hsvS_ = static_cast<uint8_t>(saturation);
+        hsvV_ = static_cast<uint8_t>(value);
+        dirty_.add(ui_layout::kHsvSquarePaint);
+        dirty_.add(ui_layout::kHsvPreview);
+        dirty_.add(ui_layout::kHsvReadout);
       }
       break;
     default:
       break;
   }
+}
+
+void Ui::openHsv() {
+  const Hsv hsv = rgb565ToHsv(color_);
+  hsvH_ = hsv.h;
+  hsvS_ = hsv.s;
+  hsvV_ = hsv.v;
+  setSheet(Sheet::Hsv);
+}
+
+void Ui::rememberColor(uint16_t color) {
+  int existing = -1;
+  for (int i = 0; i < recentCount_; ++i) {
+    if (recentColors_[i] == color) {
+      existing = i;
+      break;
+    }
+  }
+  if (existing == 0) {
+    return;
+  }
+
+  int last = recentCount_;
+  if (existing > 0) {
+    last = existing;
+  } else if (recentCount_ < ui_layout::kRecentColorCount) {
+    ++recentCount_;
+    last = recentCount_ - 1;
+  } else {
+    last = ui_layout::kRecentColorCount - 1;
+  }
+
+  for (int i = last; i > 0; --i) {
+    recentColors_[i] = recentColors_[i - 1];
+  }
+  recentColors_[0] = color;
 }
 
 void Ui::updatePlaceholder(const TouchFrame& frame) {
@@ -541,6 +733,13 @@ void Ui::render(uint16_t* fb, int fbWidth, const Rect& clip) {
   if (!fb || dirty_.empty()) {
     return;
   }
+  compose(fb, fbWidth, clip);
+}
+
+void Ui::compose(uint16_t* fb, int fbWidth, const Rect& clip) {
+  if (!fb) {
+    return;
+  }
 
   switch (screen_) {
     case Screen::Splash:
@@ -568,7 +767,7 @@ void Ui::render(uint16_t* fb, int fbWidth, const Rect& clip) {
 void Ui::drawSplash(uint16_t* fb, int fbWidth, const Rect& clip) {
   gfx::fillRect(fb, fbWidth, clip, ui_layout::kScreen, kSplashBg);
   drawTextCentered(fb, fbWidth, clip, {0, 110, 320, 90}, "Pico Paint", kWhite, 4);
-  drawTextCentered(fb, fbWidth, clip, {0, 205, 320, 30}, "M3 UI shell", kAccent, 2);
+  drawTextCentered(fb, fbWidth, clip, {0, 205, 320, 30}, "M4 drawing", kAccent, 2);
 
   char buffer[32];
   std::snprintf(buffer, sizeof(buffer), "v%s", PAINT_VERSION);
@@ -602,10 +801,12 @@ void Ui::drawTopBar(uint16_t* fb, int fbWidth, const Rect& clip) {
     const Rect r = ui_layout::kButtons[i];
     const bool active = (i == 0 && sheet_ == Sheet::Tools) ||
                         (i == 1 && sheet_ == Sheet::Size) ||
-                        (i == 2 && sheet_ == Sheet::Palette) ||
+                        (i == 2 &&
+                         (sheet_ == Sheet::Palette || sheet_ == Sheet::Hsv)) ||
                         (i == 5 && sheet_ == Sheet::Menu);
     const bool pressed = pressedButton_ == i;
-    const bool disabled = (i == 3 || i == 4);
+    const bool disabled = (i == 3 && !undoAvailable_) ||
+                          (i == 4 && !redoAvailable_);
 
     drawButtonFrame(fb, fbWidth, clip, r, pressed, active, disabled);
 
@@ -620,10 +821,10 @@ void Ui::drawTopBar(uint16_t* fb, int fbWidth, const Rect& clip) {
         drawColorIcon(fb, fbWidth, clip, r, color_);
         break;
       case 3:
-        drawArrowIcon(fb, fbWidth, clip, r, false, kDisabled);
+        drawArrowIcon(fb, fbWidth, clip, r, false, disabled ? kDisabled : kText);
         break;
       case 4:
-        drawArrowIcon(fb, fbWidth, clip, r, true, kDisabled);
+        drawArrowIcon(fb, fbWidth, clip, r, true, disabled ? kDisabled : kText);
         break;
       case 5:
         drawMenuIcon(fb, fbWidth, clip, r, kText);
@@ -668,6 +869,12 @@ void Ui::drawSheet(uint16_t* fb, int fbWidth, const Rect& clip) {
         gfx::drawRect(fb, fbWidth, clip, hsv, kButtonBorder);
         drawTextCentered(fb, fbWidth, clip, hsv, "HSV", kText, 2);
       }
+      for (int i = 0; i < recentCount_; ++i) {
+        const Rect r = ui_layout::paletteRecentRect(i);
+        gfx::fillRect(fb, fbWidth, clip, r, recentColors_[i]);
+        gfx::drawRect(fb, fbWidth, clip, r,
+                      color_ == recentColors_[i] ? kWhite : kButtonBorder);
+      }
       for (int i = 0; i < ui_layout::kPaletteCount; ++i) {
         const Rect r = ui_layout::paletteSwatchRect(i);
         gfx::fillRect(fb, fbWidth, clip, r, ui_layout::kPalette[i]);
@@ -711,6 +918,66 @@ void Ui::drawSheet(uint16_t* fb, int fbWidth, const Rect& clip) {
         drawTextLeftCentered(fb, fbWidth, clip, r, kMenuNames[i], kText, 2, 10);
       }
       break;
+
+    case Sheet::ConfirmNew:
+      gfx::drawText(fb, fbWidth, clip, {16, static_cast<int16_t>(sheet.y + 12)},
+                    "New canvas?", kText, 2);
+      gfx::drawText(fb, fbWidth, clip, {20, static_cast<int16_t>(sheet.y + 54)},
+                    "Clear the drawing and", kTextDim, 2);
+      gfx::drawText(fb, fbWidth, clip, {20, static_cast<int16_t>(sheet.y + 78)},
+                    "undo history?", kTextDim, 2);
+      gfx::fillRect(fb, fbWidth, clip, ui_layout::kConfirmNewCancel, kButton);
+      gfx::drawRect(fb, fbWidth, clip, ui_layout::kConfirmNewCancel, kButtonBorder);
+      drawTextCentered(fb, fbWidth, clip, ui_layout::kConfirmNewCancel, "Cancel",
+                       kText, 2);
+      gfx::fillRect(fb, fbWidth, clip, ui_layout::kConfirmNewOk, kButtonActive);
+      gfx::drawRect(fb, fbWidth, clip, ui_layout::kConfirmNewOk, kAccent);
+      drawTextCentered(fb, fbWidth, clip, ui_layout::kConfirmNewOk, "Clear",
+                       kText, 2);
+      break;
+
+    case Sheet::Hsv: {
+      gfx::drawText(fb, fbWidth, clip, {16, static_cast<int16_t>(sheet.y + 8)},
+                    "HSV colour", kText, 2);
+
+      gfx::fillRect(fb, fbWidth, clip, ui_layout::kHsvPreview,
+                    hsvToRgb565(hsvH_, hsvS_, hsvV_));
+      gfx::drawRect(fb, fbWidth, clip, ui_layout::kHsvPreview, kWhite);
+
+      // The readout is dirty separately from the rest of the sheet, so clear
+      // its background before drawing the fixed-width values.
+      gfx::fillRect(fb, fbWidth, clip, ui_layout::kHsvReadout, kSheet);
+      char line[32];
+      std::snprintf(line, sizeof(line), "H %3u",
+                    static_cast<unsigned>((hsvH_ * 360u) / 255u));
+      gfx::drawText(fb, fbWidth, clip, {88, static_cast<int16_t>(sheet.y + 44)},
+                    line, kText, 2);
+      std::snprintf(line, sizeof(line), "S %3u%%  V %3u%%",
+                    static_cast<unsigned>((hsvS_ * 100u) / 255u),
+                    static_cast<unsigned>((hsvV_ * 100u) / 255u));
+      gfx::drawText(fb, fbWidth, clip, {88, static_cast<int16_t>(sheet.y + 68)},
+                    line, kText, 2);
+
+      gfx::drawText(fb, fbWidth, clip, {20, static_cast<int16_t>(sheet.y + 94)},
+                    "Hue", kTextDim, 2);
+      drawHsvHueBar(fb, fbWidth, clip, ui_layout::kHsvHueBar, hsvH_);
+
+      gfx::drawText(fb, fbWidth, clip, {20, static_cast<int16_t>(sheet.y + 138)},
+                    "Sat / Val", kTextDim, 2);
+      drawHsvSquare(fb, fbWidth, clip, ui_layout::kHsvSquare, hsvH_, hsvS_, hsvV_);
+
+      gfx::drawText(fb, fbWidth, clip, {20, static_cast<int16_t>(sheet.y + 300)},
+                    "Tap a control to adjust", kTextDim, 2);
+
+      gfx::fillRect(fb, fbWidth, clip, ui_layout::kHsvCancel, kButton);
+      gfx::drawRect(fb, fbWidth, clip, ui_layout::kHsvCancel, kButtonBorder);
+      drawTextCentered(fb, fbWidth, clip, ui_layout::kHsvCancel, "Cancel", kText,
+                       2);
+      gfx::fillRect(fb, fbWidth, clip, ui_layout::kHsvOk, kButtonActive);
+      gfx::drawRect(fb, fbWidth, clip, ui_layout::kHsvOk, kAccent);
+      drawTextCentered(fb, fbWidth, clip, ui_layout::kHsvOk, "Use", kText, 2);
+      break;
+    }
 
     default:
       break;
@@ -794,7 +1061,7 @@ void Ui::drawPlaceholder(uint16_t* fb, int fbWidth, const Rect& clip) {
       gfx::drawText(fb, fbWidth, clip, {20, 244}, "ILI9488 320x480", kText, 2);
       gfx::drawText(fb, fbWidth, clip, {20, 272}, "HR2046 touch", kText, 2);
       gfx::drawText(fb, fbWidth, clip, {20, 300}, "LittleFS 2 MB", kText, 2);
-      gfx::drawText(fb, fbWidth, clip, {20, 340}, "M3 UI + calibration", kTextDim, 2);
+      gfx::drawText(fb, fbWidth, clip, {20, 340}, "M4 drawing + undo", kTextDim, 2);
       break;
     }
 

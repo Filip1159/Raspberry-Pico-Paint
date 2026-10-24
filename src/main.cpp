@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 
 #include <cstdio>
+#include <cstring>
 #include <new>
 
 #include "config.h"
@@ -11,7 +12,11 @@
 #include "input/calibration.h"
 #include "input/touch.h"
 #include "input/touch_state.h"
+#include "paint/brush.h"
+#include "paint/canvas.h"
 #include "paint/color.h"
+#include "paint/stroke.h"
+#include "paint/undo.h"
 #include "storage/settings.h"
 #include "ui/ui.h"
 #include "version.h"
@@ -22,6 +27,7 @@ constexpr uint32_t kHeartbeatMs = 5000;
 constexpr uint32_t kLedBlinkMs = 500;
 constexpr int kFbWidth = paint::config::kScreenWidth;
 constexpr int kFbHeight = paint::config::kScreenHeight;
+constexpr int kOverlayBandHeight = 32;
 
 const paint::Rect kScreenRect = {0, 0, kFbWidth, kFbHeight};
 
@@ -34,7 +40,210 @@ paint::TouchStateMachine gTouchState;
 paint::Ui gUi;
 paint::Settings gSettings;
 uint16_t* gFramebuffer = nullptr;
+uint16_t* gOverlayScratch = nullptr;
+paint::Canvas gCanvas;
+paint::StrokeController gStroke;
+paint::UndoStack gUndo;
+bool gBaseReady = false;
 bool gSettingsLoaded = false;
+
+void flushDisplayRect(const paint::Rect& rect) {
+  if (!rect.empty()) {
+    gDisplay.flush(rect, gFramebuffer, kFbWidth);
+  }
+}
+
+bool rectInside(const paint::Rect& inner, const paint::Rect& outer) {
+  return !inner.empty() && !outer.empty() && inner.x >= outer.x &&
+         inner.y >= outer.y && inner.right() <= outer.right() &&
+         inner.bottom() <= outer.bottom();
+}
+
+// Compose a dirty rectangle that belongs to the persistent base layer. The
+// top bar is live UI state and is composed before flushing; canvas pixels are
+// already in the framebuffer and are flushed as-is.
+void composeBaseRect(const paint::Rect& rect) {
+  if (rect.empty()) {
+    return;
+  }
+
+  const paint::Rect top = rect.intersect(paint::ui_layout::kTopBar);
+  if (!top.empty()) {
+    gUi.compose(gFramebuffer, kFbWidth, top);
+    flushDisplayRect(top);
+  }
+
+  const paint::Rect bottom = rect.intersect(paint::ui_layout::kCanvas);
+  if (!bottom.empty()) {
+    flushDisplayRect(bottom);
+  }
+}
+
+// Show an opaque UI overlay (sheet, full-screen screen, or toast) without
+// losing the canvas pixels underneath. Each horizontal band is composed,
+// flushed, and then restored from a small scratch buffer.
+void presentOverlayRect(const paint::Rect& rect) {
+  if (rect.empty() || !gOverlayScratch) {
+    return;
+  }
+
+  for (int y = rect.y; y < rect.bottom(); y += kOverlayBandHeight) {
+    int h = rect.bottom() - y;
+    if (h > kOverlayBandHeight) {
+      h = kOverlayBandHeight;
+    }
+    if (h <= 0) {
+      break;
+    }
+
+    for (int row = 0; row < h; ++row) {
+      std::memcpy(gOverlayScratch + row * rect.w,
+                  gFramebuffer + (y + row) * kFbWidth + rect.x,
+                  static_cast<size_t>(rect.w) * sizeof(uint16_t));
+    }
+
+    const paint::Rect band{rect.x, static_cast<int16_t>(y), rect.w,
+                           static_cast<int16_t>(h)};
+    const uint32_t start = micros();
+    gUi.compose(gFramebuffer, kFbWidth, band);
+    flushDisplayRect(band);
+    const uint32_t elapsed = micros() - start;
+
+    for (int row = 0; row < h; ++row) {
+      std::memcpy(gFramebuffer + (y + row) * kFbWidth + rect.x,
+                  gOverlayScratch + row * rect.w,
+                  static_cast<size_t>(rect.w) * sizeof(uint16_t));
+    }
+
+#ifdef PAINT_DIAG
+    Serial.printf("[ui] overlay band %d,%d %dx%d: %lu us\n", band.x, band.y,
+                  band.w, band.h, static_cast<unsigned long>(elapsed));
+#endif
+  }
+}
+
+void presentDirtyRect(const paint::Rect& rect) {
+  if (rect.empty()) {
+    return;
+  }
+
+  paint::Rect cover;
+  if (gUi.screen() == paint::Screen::Splash) {
+    gUi.compose(gFramebuffer, kFbWidth, rect);
+    flushDisplayRect(rect);
+    return;
+  }
+  if (gUi.screen() != paint::Screen::Canvas) {
+    cover = kScreenRect;
+  } else if (gUi.sheet() != paint::Sheet::None) {
+    cover = paint::ui_layout::sheetRect(gUi.sheet());
+  } else if (gUi.toastVisible()) {
+    cover = paint::ui_layout::kToast;
+  }
+
+  if (cover.empty()) {
+    composeBaseRect(rect);
+    return;
+  }
+
+  const paint::Rect inside = rect.intersect(cover);
+  if (inside.empty()) {
+    composeBaseRect(rect);
+    return;
+  }
+  if (inside == rect) {
+    presentOverlayRect(rect);
+    return;
+  }
+
+  // Flush the parts outside the opaque overlay from the base framebuffer,
+  // then compose the covered part.
+  if (inside.y > rect.y) {
+    composeBaseRect({rect.x, rect.y, rect.w,
+                     static_cast<int16_t>(inside.y - rect.y)});
+  }
+  if (inside.bottom() < rect.bottom()) {
+    composeBaseRect({rect.x, inside.bottom(), rect.w,
+                     static_cast<int16_t>(rect.bottom() - inside.bottom())});
+  }
+  if (inside.x > rect.x) {
+    composeBaseRect({rect.x, inside.y,
+                     static_cast<int16_t>(inside.x - rect.x), inside.h});
+  }
+  if (inside.right() < rect.right()) {
+    composeBaseRect({inside.right(), inside.y,
+                     static_cast<int16_t>(rect.right() - inside.right()),
+                     inside.h});
+  }
+  presentOverlayRect(inside);
+}
+
+void initializeCanvasBase() {
+  gCanvas.setTarget(gFramebuffer, kFbWidth, paint::ui_layout::kCanvas);
+  gCanvas.clear(paint::config::kPaperColor);
+  gCanvas.clearDirty();
+
+  gUi.compose(gFramebuffer, kFbWidth, kScreenRect);
+  flushDisplayRect(kScreenRect);
+  gUi.clearDirty();
+  gUndo.clear();
+  gUi.setUndoRedoAvailable(false, false);
+  gBaseReady = true;
+  Serial.println("[paint] canvas layer ready");
+}
+
+void flushCanvasDirty() {
+  paint::Rect avoid;
+  if (gUi.screen() == paint::Screen::Canvas && gUi.toastVisible()) {
+    avoid = paint::ui_layout::kToast;
+  }
+
+  const int count = gCanvas.dirtyCount();
+  for (int i = 0; i < count; ++i) {
+    const paint::Rect rect = gCanvas.dirtyRect(i);
+    const paint::Rect inside = avoid.empty() ? paint::Rect{} : rect.intersect(avoid);
+    if (inside.empty()) {
+      flushDisplayRect(rect);
+      continue;
+    }
+    if (inside.y > rect.y) {
+      flushDisplayRect({rect.x, rect.y, rect.w,
+                        static_cast<int16_t>(inside.y - rect.y)});
+    }
+    if (inside.bottom() < rect.bottom()) {
+      flushDisplayRect({rect.x, inside.bottom(), rect.w,
+                        static_cast<int16_t>(rect.bottom() - inside.bottom())});
+    }
+    if (inside.x > rect.x) {
+      flushDisplayRect({rect.x, inside.y,
+                        static_cast<int16_t>(inside.x - rect.x), inside.h});
+    }
+    if (inside.right() < rect.right()) {
+      flushDisplayRect({inside.right(), inside.y,
+                        static_cast<int16_t>(rect.right() - inside.right()),
+                        inside.h});
+    }
+  }
+  gCanvas.clearDirty();
+}
+
+paint::Point clampToCanvas(paint::Point p) {
+  int x = p.x;
+  int y = p.y;
+  if (x < paint::ui_layout::kCanvas.x) {
+    x = paint::ui_layout::kCanvas.x;
+  }
+  if (x >= paint::ui_layout::kCanvas.right()) {
+    x = paint::ui_layout::kCanvas.right() - 1;
+  }
+  if (y < paint::ui_layout::kCanvas.y) {
+    y = paint::ui_layout::kCanvas.y;
+  }
+  if (y >= paint::ui_layout::kCanvas.bottom()) {
+    y = paint::ui_layout::kCanvas.bottom() - 1;
+  }
+  return paint::Point{static_cast<int16_t>(x), static_cast<int16_t>(y)};
+}
 
 void printBanner() {
   Serial.println();
@@ -46,7 +255,7 @@ void printBanner() {
                 static_cast<unsigned long>(F_CPU / 1000000UL));
   Serial.printf("  display : ILI9488 %dx%d (portrait)\n",
                 paint::config::kScreenWidth, paint::config::kScreenHeight);
-  Serial.println("  stage   : M3 touch + UI + calibration");
+  Serial.println("  stage   : M4 drawing + compressed undo");
   Serial.println("========================================");
 }
 
@@ -158,6 +367,22 @@ void setup() {
                 static_cast<unsigned long>(sizeof(uint16_t) * kFbWidth * kFbHeight),
                 static_cast<unsigned long>(rp2040.getFreeHeap()));
 
+  gOverlayScratch = new (std::nothrow) uint16_t[kFbWidth * kOverlayBandHeight];
+  if (!gOverlayScratch) {
+    Serial.println("[ui] overlay scratch allocation failed");
+    gDisplay.fillScreen(paint::kRed);
+    return;
+  }
+  Serial.printf("[ui] overlay scratch %dx%d = %lu bytes, free heap %lu\n",
+                kFbWidth, kOverlayBandHeight,
+                static_cast<unsigned long>(sizeof(uint16_t) * kFbWidth *
+                                           kOverlayBandHeight),
+                static_cast<unsigned long>(rp2040.getFreeHeap()));
+
+  gCanvas.setTarget(gFramebuffer, kFbWidth, paint::ui_layout::kCanvas);
+  gStroke.setCanvas(&gCanvas);
+  gStroke.setUndo(&gUndo);
+
   Serial.println("[touch] initialising HR2046/XPT2046 on SPI1");
   const bool touchCalibrated =
       gSettingsLoaded && paint::isCalibrationPlausible(gSettings.calibration);
@@ -265,6 +490,10 @@ void loop() {
     }
   }
 
+  const paint::Screen screenBefore = gUi.screen();
+  const bool canDraw = gBaseReady && screenBefore == paint::Screen::Canvas &&
+                       gUi.sheet() == paint::Sheet::None;
+
   gUi.update(frame, now);
 
   paint::Calibration newCalibration;
@@ -283,17 +512,96 @@ void loop() {
                   static_cast<long>(newCalibration.f), saved ? 1 : 0);
   }
 
-  gUi.render(gFramebuffer, kFbWidth, kScreenRect);
+  if (gUi.screen() == paint::Screen::Splash) {
+    if (gUi.dirty()) {
+      gUi.compose(gFramebuffer, kFbWidth, kScreenRect);
+      flushDisplayRect(kScreenRect);
+      gUi.clearDirty();
+    }
+    delay(1);
+    return;
+  }
+
+  if (!gBaseReady) {
+    initializeCanvasBase();
+  }
+
+  if (gUi.takeUndoRequest()) {
+    if (gStroke.active()) {
+      gStroke.cancel();
+      gUndo.commit();
+    }
+    if (gUndo.undo(gCanvas)) {
+      gUi.setUndoRedoAvailable(gUndo.canUndo(), gUndo.canRedo());
+    }
+  }
+
+  if (gUi.takeRedoRequest()) {
+    if (gStroke.active()) {
+      gStroke.cancel();
+      gUndo.commit();
+    }
+    if (gUndo.redo(gCanvas)) {
+      gUi.setUndoRedoAvailable(gUndo.canUndo(), gUndo.canRedo());
+    }
+  }
+
+  if (gUi.takeNewCanvasRequest()) {
+    gStroke.cancel();
+    gUndo.clear();
+    gCanvas.clear(paint::config::kPaperColor);
+    gUi.setUndoRedoAvailable(false, false);
+    gUi.notify("New canvas", now);
+  }
+
+  if (canDraw && (gUi.tool() == paint::Tool::Brush ||
+                  gUi.tool() == paint::Tool::Eraser)) {
+    const bool eraser = gUi.tool() == paint::Tool::Eraser;
+    const paint::BrushMask& mask =
+        paint::brushMaskForSize(gUi.brushSize());
+    const uint16_t color =
+        eraser ? paint::config::kPaperColor : gUi.color();
+
+    if (frame.down && frame.y >= paint::config::kTopBarHeight) {
+      gUndo.beginAction();
+      gStroke.begin(mask, color, clampToCanvas({frame.x, frame.y}));
+    } else if (gStroke.active() && frame.move) {
+      gStroke.move(clampToCanvas({frame.x, frame.y}));
+    } else if (gStroke.active() && frame.up) {
+      gStroke.end(clampToCanvas({frame.x, frame.y}));
+      gUndo.commit();
+      if (gUndo.takeOverflow()) {
+        gUi.notify("Stroke too large to undo", now);
+      }
+      gUi.setUndoRedoAvailable(gUndo.canUndo(), gUndo.canRedo());
+    }
+  }
+
+  if (gUi.screen() != paint::Screen::Canvas ||
+      gUi.sheet() != paint::Sheet::None) {
+    if (gStroke.active()) {
+      gStroke.cancel();
+      gUndo.commit();
+      if (gUndo.takeOverflow()) {
+        gUi.notify("Stroke too large to undo", now);
+      }
+      gUi.setUndoRedoAvailable(gUndo.canUndo(), gUndo.canRedo());
+    }
+  }
+
+  if (gBaseReady) {
+    flushCanvasDirty();
+  }
 
   if (gUi.dirty()) {
     const int count = gUi.dirtyCount();
     for (int i = 0; i < count; ++i) {
       const paint::Rect dirty = gUi.dirtyRect(i);
       const uint32_t start = micros();
-      gDisplay.flush(dirty, gFramebuffer, kFbWidth);
+      presentDirtyRect(dirty);
       const uint32_t elapsed = micros() - start;
 #ifdef PAINT_DIAG
-      Serial.printf("[ui] flush %d/%d %d,%d %dx%d: %lu us\n",
+      Serial.printf("[ui] present %d/%d %d,%d %dx%d: %lu us\n",
                     i + 1, count, dirty.x, dirty.y, dirty.w, dirty.h,
                     static_cast<unsigned long>(elapsed));
 #endif

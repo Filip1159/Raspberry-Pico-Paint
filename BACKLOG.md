@@ -1,7 +1,7 @@
 # Pico Paint — Backlog & Implementation Plan
 
 **Target hardware:** Raspberry Pi Pico 2 W (RP2350, 4 MB flash, 520 KB SRAM) + 4" 480×320 ILI9488 SPI TFT (used in **portrait 320×480**) with **HR2046 / XPT2046-compatible** resistive touch
-**Status:** M0–M3 complete and hardware-verified (UI shell + guided calibration persistence); M4 drawing engine next
+**Status:** M0–M3 complete and hardware-verified; M4 drawing engine implemented and host/native-tested, hardware profiling pending; M5 tools next
 **Last updated:** 2026-10-24
 
 ---
@@ -37,11 +37,13 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - PlatformIO project retargeted to **Pico 2 W** (`board = rpipico2w`) via the RP2350-capable maxgerhardt platform fork, pinned to a commit.
 - M1 skeleton is in place and **hardware-verified on 2026-10-24**: serial banner, LittleFS `total=2097152 used=8192 free=2088960`, free heap 452,472 B. The onboard backlight driver is confirmed: `LED` tied to 3V3 through 10k lights the panel.
 - M2 implementation is in place: ILI9488 init/rotation/address-window driver, RGB565→RGB666 line-buffer flush, `gfx` primitives (rect, hline/vline, line, circle, fillCircle, text, blit), 5×7 font, dirty-region helper, benchmarks and the original diagnostics screen (now retired from the normal boot).
-- Builds verified on 2026-10-24:
-  - `pico2w_usb`: **SUCCESS** — RAM 72,768 B (13.9%), flash 346,872 B (16.6%)
-  - `pico2w_ota`: **SUCCESS** — RAM 72,768 B, flash 346,864 B
-  - `pico2w_diag`: **SUCCESS** — RAM 72,840 B (13.9%), flash 347,384 B (16.6%)
-- Native tests pass under WSL g++ (24/24, including the disjoint-rect dirty-region, calibration, settings-codec, touch-state, font-range and UI-layout tests). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
+- M4 builds verified on 2026-10-24:
+  - `pico2w_usb`: **SUCCESS** — RAM 138,032 B (26.3%), flash 419,576 B (20.0%)
+  - `pico2w_ota`: **SUCCESS** — RAM 138,032 B, flash 419,576 B
+  - `pico2w_diag`: **SUCCESS** — RAM 138,104 B (26.3%), flash 420,352 B (20.1%)
+- Native tests pass under WSL g++ (**40/40**), including canvas/brush/stroke, compressed undo/redo and raw-tile fallback, HSV conversion, UI layout, New-canvas confirmation, HSV-picker flow, HSV dirty bounds and undo/redo requests. `pio test -e native` now builds the Arduino-free UI/gfx/font sources; run it in WSL/Linux or CI because the Windows host has no `gcc`/`g++`.
+- M4 drawing engine is implemented: clipped `Canvas` over the shared framebuffer, seven round brush masks, gap-free brush/eraser strokes with per-dab undo capture, palette + five recent colours, HSV picker, compressed undo/redo, New-canvas confirmation, and overlay-safe presentation for sheets/toasts/screens. Host-preview screenshots exercise the art, sheets, toast, undo/redo, New confirmation, HSV picking and recent-colour row.
+- Undo/redo uses a fixed ~64 KB in-object pool: 44 RLE tile records + 7 raw tile records, up to 16 actions and 32 tiles/action. Each action captures "before" tiles, converts them to XOR deltas at commit, and evicts the oldest action when the pool fills. Ten normal undo levels now fit in cases that previously exhausted the 30 raw-tile pool; pathological strokes can still trim history.
 - M2 is hardware-verified: correct colours, upright portrait at rotation 2, no offset/clipping, stable 40 MHz SPI, 139.3 ms full-screen flush, 143,360 B free heap after the framebuffer.
 - M3-1 is hardware-validated: the HR2046 responds on SPI1 at all four corners. Raw ranges are roughly X 260–3880 and Y 298–3807. The normal build prints `down`, `up`, `tap` and `long-press`; `pico2w_diag` additionally prints `move`, raw samples and UI flush timings.
 - M3-2 calibration is implemented as a full Q16.16 affine least-squares fit from four corner samples. The panel's raw axes are rotated 90° relative to the display (raw X top→bottom, raw Y left→right), so the transform includes cross terms; all four corners map within ~1 px. Settings are stored in `/config.bin` with a magic/version/FNV-1a checksum header and atomic `/config.tmp` → rename replacement; implausible or corrupt calibration falls back to the factory map.
@@ -51,9 +53,9 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - The UI has been rendered on the host at 320×480 for splash, canvas, every sheet, placeholders and toast, and is now hardware-verified on 2026-10-24: splash → canvas, all six top-bar buttons, tools/palette/size/menu sheets, toasts, and Gallery/Settings/About back navigation. Free heap is **142,688 B** on the calibration build (142,760 B on the later reboot build).
 - Measured calibration-flow flushes: Settings **Calibrate touch** button (280×44) 11.2 ms, "Calibration saved" toast (288×36) 9.5 ms, and each full-screen crosshair step ≈139.4 ms. The earlier sheet-button optimization is confirmed: opening the menu flushed only `258,2 44×44` (1.87 ms) plus the sheet, not the whole top bar.
 - Measured M3 UI flushes: 44×44 top-bar button 1.85–1.98 ms; 288×36 toast 9.44 ms; sheet flushes 34.9–98.7 ms; full-screen transition 139.3 ms. `setSheet()` now dirties only the affected 44×44 button(s) instead of the whole 320×48 bar, saving ~12 ms per sheet transition. Details in `docs/performance.md`.
-- Git repository initialized (`main`); M1, M2, the M3 touch driver and the M3 UI shell are committed.
+- Git repository initialized (`main`); M1, M2, the M3 touch driver/UI shell and the M4 drawing engine are committed.
 
-**Next action:** commit the M3 calibration work and start the M4 canvas buffer/drawing engine. M3-9 is complete; the only M3 performance caveat is that the large palette/menu sheets flush in 37–101 ms (generic buttons and toasts are <12 ms).
+**Next action:** connect the Pico and run the M4 hardware validation (stroke latency/fps, undo/redo feel, overlay transitions, HSV interaction, New confirmation, 5-minute heap stability), then record the timings in `docs/performance.md` and commit M4. The large palette/menu sheets still flush in 37–101 ms from M3; the HSV sheet is expected to be the largest overlay and should be measured first.
 
 ---
 
@@ -357,18 +359,20 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 
 **Goal:** the core paint experience.
 
-- [ ] M4-1 Implement `Canvas` (RGB565 framebuffer, clip rect, dirty tracking).
-- [ ] M4-2 Precompute round brush masks for sizes 1, 2, 4, 8, 16, 24, 32 px.
-- [ ] M4-3 Stamp brushes along interpolated segments (no gaps at fast swipes); support fractional stepping.
-- [ ] M4-4 Implement eraser (paints paper white) with the same sizes.
-- [ ] M4-5 Build the palette: 24 default colours + recently used; 6×4 swatch grid.
-- [ ] M4-6 Implement the HSV colour picker (hue slider + saturation/value square) with a live preview.
-- [ ] M4-7 Implement undo/redo per §5.5 (tile snapshots, action ring, toast when an action is too large).
-- [ ] M4-8 Implement "New / Clear canvas" with confirmation.
-- [ ] M4-9 Add brush-size picker with visual circles.
-- [ ] M4-10 Profile: stroke latency, fps for 1/8/24 px brushes, undo memory high-water mark.
+- [x] M4-1 Implement `Canvas` (RGB565 framebuffer, clip rect, dirty tracking). *`Canvas` is a clipped view over the shared framebuffer with `setTarget`, `fillRect`, `setPixel`, bounded dirty tracking and direct flush support.*
+- [x] M4-2 Precompute round brush masks for sizes 1, 2, 4, 8, 16, 24, 32 px. *1-bit header-only masks generated once in `brush.h`; nearest size wins.*
+- [x] M4-3 Stamp brushes along interpolated segments (no gaps at fast swipes); support fractional stepping. *`strokeBrush` steps at `max(1, diameter/8)` and always stamps both endpoints; native tests verify continuity and clipping.*
+- [x] M4-4 Implement eraser (paints paper white) with the same sizes. *The eraser uses the same brush masks and `config::kPaperColor`; enabled in the canvas UI.*
+- [x] M4-5 Build the palette: 24 default colours + recently used; 6×4 swatch grid. *Five recent colours occupy the palette title row; selecting a recent swatch moves it to the front.*
+- [x] M4-6 Implement the HSV colour picker (hue slider + saturation/value square) with a live preview. *Bottom sheet with hue bar, 64×48-cell S/V square, preview, H/S/V readout, Cancel/Use; tapping a control repaints only its paint bounds plus preview/readout (clipped cell drawing), not the whole sheet.*
+- [x] M4-7 Implement undo/redo per §5.5 (tile snapshots, action ring, toast when an action is too large). *Fixed ~64 KB pool with 44 RLE + 7 raw tile records, up to 16 actions; captures per dab, converts to XOR deltas at commit, evicts the oldest action when full, and toasts when an action cannot be captured.*
+- [x] M4-8 Implement "New / Clear canvas" with confirmation. *Menu → New canvas opens `Sheet::ConfirmNew`; Cancel returns, Clear requests a canvas reset, clears undo/redo and shows a toast.*
+- [x] M4-9 Add brush-size picker with visual circles. *Size sheet with seven circles and labels; top-bar size icon reflects the active diameter.*
+- [ ] M4-10 Profile: stroke latency, fps for 1/8/24 px brushes, undo memory high-water mark. *Host preview validated; hardware measurement is blocked until a Pico is attached.*
 
 **Acceptance:** continuous strokes with no gaps; 10 undo levels for normal strokes; 8 px brush ≥30 fps; free heap stable after 5 minutes of drawing.
+
+**Status (2026-10-24): implemented; hardware validation pending.** Native tests and the host preview cover strokes, clipping, undo/redo, compressed/raw tile paths, New confirmation, HSV picking and recent colours. The compressed undo pool keeps ten short multi-tile actions in the 40-record-capacity case and no longer wastes a full 32×32 snapshot for every dab. Hardware latency/fps and heap high-water measurements remain to be recorded in `docs/performance.md`.
 
 ---
 
