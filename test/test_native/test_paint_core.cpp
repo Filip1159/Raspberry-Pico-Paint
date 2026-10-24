@@ -293,6 +293,11 @@ static void test_undo_redo_round_trip() {
   TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(100, 100));
   TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(140, 120));
   TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(160, 130));
+  const UndoStack::Usage usage = undo.usage();
+  TEST_ASSERT_EQUAL_INT(1, usage.actions);
+  TEST_ASSERT_TRUE(usage.records > 0);
+  TEST_ASSERT_TRUE(usage.records <= UndoStack::kMaxTileRecords);
+  TEST_ASSERT_TRUE(usage.bytes > 0);
 
   canvas.clearDirty();
   TEST_ASSERT_TRUE(undo.undo(canvas));
@@ -308,6 +313,12 @@ static void test_undo_redo_round_trip() {
   TEST_ASSERT_FALSE(undo.canRedo());
   TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(100, 100));
   TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(160, 130));
+
+  undo.clear();
+  const UndoStack::Usage cleared = undo.usage();
+  TEST_ASSERT_EQUAL_INT(0, cleared.actions);
+  TEST_ASSERT_EQUAL_INT(0, cleared.records);
+  TEST_ASSERT_EQUAL_INT(0, cleared.bytes);
 }
 
 static void test_undo_multiple_actions_and_new_action_discards_redo() {

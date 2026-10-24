@@ -14,9 +14,9 @@ an 800 ms splash, canvas, 48 px top bar, bottom sheets, toasts and placeholder
 Gallery/Settings/About screens. Settings → **Calibrate touch** saves its
 transform to `/config.bin` and reloads it on boot.
 
-**M4 (drawing engine)** is implemented and verified in the host preview and
-native tests; hardware timing/feel validation is pending because no Pico USB
-device was attached during the final pass. It includes:
+**M4 (drawing engine)** is implemented and **hardware-validated on
+2026-10-24**. The normal build was exercised manually for drawing, undo and
+clearing; the diagnostics build produced the timings below. It includes:
 
 - A clipped RGB565 canvas over the main framebuffer, with dirty-rectangle
   tracking and direct canvas flushes.
@@ -35,9 +35,13 @@ device was attached during the final pass. It includes:
   calibration never destroy the canvas beneath them.
 
 M4 firmware builds are clean (`pico2w_usb` RAM 138,032 B / flash 419,576 B;
-`pico2w_ota` RAM 138,032 B / flash 419,576 B; `pico2w_diag` RAM 138,104 B /
-flash 420,352 B), and the native suite passes **40/40**. M5–M6 add the shape,
-fill and eyedropper tools plus storage/gallery; OTA lands in M7. See
+`pico2w_ota` RAM 138,032 B / flash 419,576 B; `pico2w_diag` RAM 138,132 B /
+flash 420,864 B), and the native suite passes **40/40**. Hardware profiling
+showed a flat **57,008 B** free heap for 5+ minutes, first-dab flushes of
+0.33–1.0 ms, and 1/8/24 px stroke flushes of ~0.14/0.15/0.66 ms. Long 8/24 px
+squiggles can exceed the 32-tile undo cap, and HSV taps take 90–103 ms; these
+are tracked as follow-ups M4-11/M4-12. M5–M6 add the shape, fill and
+eyedropper tools plus storage/gallery; OTA lands in M7. See
 [`BACKLOG.md`](BACKLOG.md) for the full plan and
 [`docs/performance.md`](docs/performance.md) for the memory budget and
 benchmarks.

@@ -278,6 +278,24 @@ class UndoStack {
     return depth;
   }
 
+  struct Usage {
+    int actions = 0;  // published actions, including undone ones
+    int records = 0;  // tile records currently allocated
+    int bytes = 0;    // encoded bytes in the record pools
+  };
+
+  Usage usage() const {
+    Usage result;
+    result.actions = actionCount_;
+    for (int i = 0; i < kMaxTileRecords; ++i) {
+      if (records_[i].used) {
+        ++result.records;
+        result.bytes += records_[i].length;
+      }
+    }
+    return result;
+  }
+
   bool takeOverflow() {
     const bool value = overflow_;
     overflow_ = false;

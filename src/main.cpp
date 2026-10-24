@@ -46,6 +46,15 @@ paint::StrokeController gStroke;
 paint::UndoStack gUndo;
 bool gBaseReady = false;
 bool gSettingsLoaded = false;
+#ifdef PAINT_DIAG
+uint32_t gStrokeDownUs = 0;
+
+void printUndoUsage(const char* tag) {
+  const paint::UndoStack::Usage usage = gUndo.usage();
+  Serial.printf("[undo] %s actions=%d records=%d bytes=%d\n", tag,
+                usage.actions, usage.records, usage.bytes);
+}
+#endif
 
 void flushDisplayRect(const paint::Rect& rect) {
   if (!rect.empty()) {
@@ -193,6 +202,9 @@ void initializeCanvasBase() {
 }
 
 void flushCanvasDirty() {
+#ifdef PAINT_DIAG
+  const uint32_t start = micros();
+#endif
   paint::Rect avoid;
   if (gUi.screen() == paint::Screen::Canvas && gUi.toastVisible()) {
     avoid = paint::ui_layout::kToast;
@@ -224,6 +236,37 @@ void flushCanvasDirty() {
                         inside.h});
     }
   }
+#ifdef PAINT_DIAG
+  static uint32_t lastReportMs = 0;
+  static uint32_t flushes = 0;
+  static uint32_t totalUs = 0;
+  static uint32_t maxUs = 0;
+  static uint32_t rectCount = 0;
+  if (count > 0) {
+    const uint32_t elapsed = micros() - start;
+    ++flushes;
+    totalUs += elapsed;
+    if (elapsed > maxUs) {
+      maxUs = elapsed;
+    }
+    rectCount += static_cast<uint32_t>(count);
+  }
+  const uint32_t nowMs = millis();
+  if (nowMs - lastReportMs >= 1000) {
+    if (flushes > 0) {
+      Serial.printf("[paint] %lu flushes/s avg=%lu us max=%lu us rects=%lu\n",
+                    static_cast<unsigned long>(flushes),
+                    static_cast<unsigned long>(totalUs / flushes),
+                    static_cast<unsigned long>(maxUs),
+                    static_cast<unsigned long>(rectCount));
+    }
+    lastReportMs = nowMs;
+    flushes = 0;
+    totalUs = 0;
+    maxUs = 0;
+    rectCount = 0;
+  }
+#endif
   gCanvas.clearDirty();
 }
 
@@ -471,7 +514,9 @@ void loop() {
       }
 
 #ifdef PAINT_DIAG
-      if (frame.move) {
+      static uint32_t lastMovePrint = 0;
+      if (frame.move && now - lastMovePrint >= 100) {
+        lastMovePrint = now;
         Serial.printf("[touch] move x=%d y=%d\n", frame.x, frame.y);
       }
 
@@ -533,6 +578,9 @@ void loop() {
     }
     if (gUndo.undo(gCanvas)) {
       gUi.setUndoRedoAvailable(gUndo.canUndo(), gUndo.canRedo());
+#ifdef PAINT_DIAG
+      printUndoUsage("undo");
+#endif
     }
   }
 
@@ -543,6 +591,9 @@ void loop() {
     }
     if (gUndo.redo(gCanvas)) {
       gUi.setUndoRedoAvailable(gUndo.canUndo(), gUndo.canRedo());
+#ifdef PAINT_DIAG
+      printUndoUsage("redo");
+#endif
     }
   }
 
@@ -552,6 +603,9 @@ void loop() {
     gCanvas.clear(paint::config::kPaperColor);
     gUi.setUndoRedoAvailable(false, false);
     gUi.notify("New canvas", now);
+#ifdef PAINT_DIAG
+    printUndoUsage("new");
+#endif
   }
 
   if (canDraw && (gUi.tool() == paint::Tool::Brush ||
@@ -563,6 +617,9 @@ void loop() {
         eraser ? paint::config::kPaperColor : gUi.color();
 
     if (frame.down && frame.y >= paint::config::kTopBarHeight) {
+#ifdef PAINT_DIAG
+      gStrokeDownUs = micros();
+#endif
       gUndo.beginAction();
       gStroke.begin(mask, color, clampToCanvas({frame.x, frame.y}));
     } else if (gStroke.active() && frame.move) {
@@ -570,6 +627,9 @@ void loop() {
     } else if (gStroke.active() && frame.up) {
       gStroke.end(clampToCanvas({frame.x, frame.y}));
       gUndo.commit();
+#ifdef PAINT_DIAG
+      printUndoUsage("commit");
+#endif
       if (gUndo.takeOverflow()) {
         gUi.notify("Stroke too large to undo", now);
       }
@@ -591,6 +651,13 @@ void loop() {
 
   if (gBaseReady) {
     flushCanvasDirty();
+#ifdef PAINT_DIAG
+    if (gStrokeDownUs != 0) {
+      Serial.printf("[paint] first flush after %lu us\n",
+                    static_cast<unsigned long>(micros() - gStrokeDownUs));
+      gStrokeDownUs = 0;
+    }
+#endif
   }
 
   if (gUi.dirty()) {

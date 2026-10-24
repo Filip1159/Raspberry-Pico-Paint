@@ -8,7 +8,10 @@ Measured 2026-10-24 with the pinned RP2350 platform (M4 build):
 |---|---:|---:|
 | `pico2w_usb` | 138,032 B (26.3%) | 419,576 B (20.0%) |
 | `pico2w_ota` | 138,032 B (26.3%) | 419,576 B (20.0%) |
-| `pico2w_diag` | 138,104 B (26.3%) | 420,352 B (20.1%) |
+| `pico2w_diag` | 138,132 B (26.3%) | 420,864 B (20.1%) |
+
+The diagnostics build is ~100 B larger because it carries the profiling
+counters and undo-usage reporting.
 
 The 320×480 RGB565 framebuffer is allocated from the heap at boot
 (307,200 B), and the overlay scratch is a 320×32 band (20,480 B). The M4
@@ -138,20 +141,81 @@ Keep the fastest stable SPI clock in `include/config.h` (`kDisplaySpiHz`); if
 
 ## M4 drawing and undo
 
-The drawing engine and UI flows are validated on the host (320×480 RGB565
-preview) and by the native suite, but the hardware timing pass is still open:
-no Pico USB device was attached during the final M4 pass. The following need
-to be measured and added here:
+Hardware validation was completed on **2026-10-24** with the `pico2w_diag`
+build on COM16; the normal `pico2w_usb` build was also exercised manually for
+drawing, undo and clearing. The serial log is the source for the numbers below.
 
-| Metric | Target | Status |
+### Heap
+
+The normal build reported:
+
+```
+[fb] 320x480 RGB565 = 307200 bytes, free heap 77496
+[ui] overlay scratch 320x32 = 20480 bytes, free heap 57008
+[mem] free heap: 57008 bytes
+```
+
+The heap stayed at **57,008 B** through 135 s of drawing/undo/clear activity.
+The diagnostics build, which carries the extra timing state, stayed at
+**56,904 B** from 85 s to 605 s (the full test sequence plus idle time). The
+budget estimate was 58,576 B; the ~1.5 KB difference is allocator overhead.
+There is no per-stroke heap growth: the undo pool is fixed in the object.
+
+### Stroke and undo
+
+| Metric | Measured | Target / note |
 |---|---:|---|
-| 8 px brush continuous stroke | ≥30 fps | pending hardware |
-| Stroke-to-pixel latency | <40 ms | pending hardware |
-| 1/8/24 px brush frame times | record | pending hardware |
-| Undo high-water memory / retained levels | 10 normal levels | pending hardware |
-| HSV sheet open/close and tap repaint | <50 ms UI interaction | pending hardware |
-| New-canvas confirmation transition | <50 ms UI interaction | pending hardware |
-| Free heap after 5 minutes of drawing | stable | pending hardware |
+| 1 px stroke, first flush | **0.33 ms** | first dab after the drawing decision |
+| 1 px stroke, steady flush | **139–152 µs**, 100 flushes/s | touch poll is 10 ms, so 100 Hz is the ceiling |
+| 8 px stroke, first flush | **0.35 ms** | |
+| 8 px stroke, steady flush | **143–153 µs**, 87–96 flushes/s | diagnostics serial output slightly lowers the rate |
+| 24 px stroke, first flush | **1.0 ms** | |
+| 24 px stroke, steady flush | **648–681 µs**, 78–93 flushes/s | still well above 30 fps |
+| Stroke-to-pixel latency | **<1 ms** first flush, plus up to 10 ms touch poll | target <40 ms ✅ |
+| Five 24 px dots | 5 actions, **11 tile records, 1,372 B** | compressed undo |
+| Undo of a dot | **2.1–3.1 ms** canvas flush | |
+| Long 1 px stroke (3.9 s) | **31 records, 4,560 B** | just below the 32-tile action cap |
+| Long 8 px and 24 px squiggles (3.5–4.2 s) | exceeded 32 tiles → **"Stroke too large to undo"** | follow-up M4-11 |
+
+The 8 px and 24 px squiggles were deliberate long strokes across a large area;
+they hit the per-action cap of 32 tile records and were correctly rejected
+rather than corrupting history. Shorter strokes and dots commit normally. This
+is the main M4 usability follow-up: a normal multi-second squiggle can exceed
+the cap. The native suite still verifies ten compressed actions across 40 tile
+records.
+
+### Overlays and UI flushes
+
+| Event | Measured | Target |
+|---|---:|---|
+| Top-bar button | **2.6–5.7 ms** | <50 ms ✅ |
+| Toast show/expire | **9.5 ms** | — |
+| Size sheet open / close | **48.5 / 41.5 ms** | <50 ms (open borderline) |
+| Palette open | **92.6 ms** | <50 ms ❌ |
+| Menu open / close | **145.3 / 122.8 ms** | <50 ms ❌ |
+| New-canvas confirm open | **76.2 ms** | <50 ms ❌ |
+| New-canvas clear | **116.3 ms** + 9.5 ms toast | — |
+| Gallery open / back | **172.9 / 141.5 ms** | — |
+| HSV open | **179.1 ms** | <50 ms ❌ |
+| HSV hue tap | **102.8 ms** | <50 ms ❌ |
+| HSV saturation/value tap | **90.3 ms** | <50 ms ❌ |
+| HSV Use close | **114.4 ms** + 9.5 ms toast | — |
+| HSV Cancel close | **110.2 ms** | — |
+
+The HSV hue tap breaks down as: S/V square **58.4 ms**, H/S/V readout
+**20.7 ms**, hue bar **12.9 ms**, preview **10.8 ms**. The S/V tap is similar:
+square **58.8 ms**, readout **20.5 ms**, preview **11.0 ms**. The square is the
+dominant cost because the overlay band path re-enters the 64×48-cell painter
+for each band and the flush itself is a 216×156 RGB666 transfer. Dirtying only
+the affected controls works, but the 90–103 ms tap latency is still above the
+50 ms UI target.
+
+The full-screen Gallery transition is **172.9 ms** on the overlay-band path,
+versus **141.5 ms** for the return to the canvas. The canvas is preserved, but
+the per-band compose adds overhead to full-screen overlays.
+
+**Follow-ups:** M4-11 covers long-stroke undo capacity; M4-12 covers HSV
+repaint latency. Both are tracked in `BACKLOG.md`.
 
 The deterministic parts are covered by `pio test -e native` (40/40): canvas
 clipping and dirty tracking, brush continuity, eraser/cancel, compressed and

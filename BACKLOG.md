@@ -1,7 +1,7 @@
 # Pico Paint — Backlog & Implementation Plan
 
 **Target hardware:** Raspberry Pi Pico 2 W (RP2350, 4 MB flash, 520 KB SRAM) + 4" 480×320 ILI9488 SPI TFT (used in **portrait 320×480**) with **HR2046 / XPT2046-compatible** resistive touch
-**Status:** M0–M3 complete and hardware-verified; M4 drawing engine implemented and host/native-tested, hardware profiling pending; M5 tools next
+**Status:** M0–M3 complete and hardware-verified; M4 drawing engine implemented, hardware-profiled and manually validated; M5 tools next, with M4-11/M4-12 follow-ups
 **Last updated:** 2026-10-24
 
 ---
@@ -40,9 +40,12 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - M4 builds verified on 2026-10-24:
   - `pico2w_usb`: **SUCCESS** — RAM 138,032 B (26.3%), flash 419,576 B (20.0%)
   - `pico2w_ota`: **SUCCESS** — RAM 138,032 B, flash 419,576 B
-  - `pico2w_diag`: **SUCCESS** — RAM 138,104 B (26.3%), flash 420,352 B (20.1%)
+  - `pico2w_diag`: **SUCCESS** — RAM 138,132 B (26.3%), flash 420,864 B (20.1%)
 - Native tests pass under WSL g++ (**40/40**), including canvas/brush/stroke, compressed undo/redo and raw-tile fallback, HSV conversion, UI layout, New-canvas confirmation, HSV-picker flow, HSV dirty bounds and undo/redo requests. `pio test -e native` now builds the Arduino-free UI/gfx/font sources; run it in WSL/Linux or CI because the Windows host has no `gcc`/`g++`.
-- M4 drawing engine is implemented: clipped `Canvas` over the shared framebuffer, seven round brush masks, gap-free brush/eraser strokes with per-dab undo capture, palette + five recent colours, HSV picker, compressed undo/redo, New-canvas confirmation, and overlay-safe presentation for sheets/toasts/screens. Host-preview screenshots exercise the art, sheets, toast, undo/redo, New confirmation, HSV picking and recent-colour row.
+- M4 was **hardware-validated on 2026-10-24** with the diagnostics build on COM16. Drawing, undo, New-canvas clear and the overlay flows work. Free heap is **57,008 B** on the normal build and **56,904 B** on the diag build, flat through 5+ minutes of activity; the estimated 58,576 B budget differs only by allocator overhead.
+- M4 flushes: 1 px stroke ~139–152 µs/frame (100 Hz touch-limited), 8 px ~143–153 µs (87–96 Hz), 24 px ~648–681 µs (78–93 Hz); first-dab flush 0.33–1.0 ms. A 3.9 s 1 px stroke used 31 undo tile records / 4,560 B; five 24 px dots used 11 records / 1,372 B and undid in 2.1–3.1 ms.
+- M4 profiling found two follow-ups: long 8/24 px squiggles exceeded the 32-tile per-action undo cap and showed "Stroke too large to undo" (M4-11), and HSV taps take 90–103 ms with the 179 ms HSV open, above the 50 ms target (M4-12).
+- M4 drawing engine is implemented and hardware-validated: clipped `Canvas` over the shared framebuffer, seven round brush masks, gap-free brush/eraser strokes with per-dab undo capture, palette + five recent colours, HSV picker, compressed undo/redo, New-canvas confirmation, and overlay-safe presentation for sheets/toasts/screens. Host-preview screenshots exercise the art, sheets, toast, undo/redo, New confirmation, HSV picking and recent-colour row.
 - Undo/redo uses a fixed ~64 KB in-object pool: 44 RLE tile records + 7 raw tile records, up to 16 actions and 32 tiles/action. Each action captures "before" tiles, converts them to XOR deltas at commit, and evicts the oldest action when the pool fills. Ten normal undo levels now fit in cases that previously exhausted the 30 raw-tile pool; pathological strokes can still trim history.
 - M2 is hardware-verified: correct colours, upright portrait at rotation 2, no offset/clipping, stable 40 MHz SPI, 139.3 ms full-screen flush, 143,360 B free heap after the framebuffer.
 - M3-1 is hardware-validated: the HR2046 responds on SPI1 at all four corners. Raw ranges are roughly X 260–3880 and Y 298–3807. The normal build prints `down`, `up`, `tap` and `long-press`; `pico2w_diag` additionally prints `move`, raw samples and UI flush timings.
@@ -55,7 +58,7 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - Measured M3 UI flushes: 44×44 top-bar button 1.85–1.98 ms; 288×36 toast 9.44 ms; sheet flushes 34.9–98.7 ms; full-screen transition 139.3 ms. `setSheet()` now dirties only the affected 44×44 button(s) instead of the whole 320×48 bar, saving ~12 ms per sheet transition. Details in `docs/performance.md`.
 - Git repository initialized (`main`); M1, M2, the M3 touch driver/UI shell and the M4 drawing engine are committed.
 
-**Next action:** connect the Pico and run the M4 hardware validation (stroke latency/fps, undo/redo feel, overlay transitions, HSV interaction, New confirmation, 5-minute heap stability), then record the timings in `docs/performance.md` and close M4-10. The M4 code is committed; M4-10 is the only open M4 item. The large palette/menu sheets still flush in 37–101 ms from M3; the HSV sheet is expected to be the largest overlay and should be measured first.
+**Next action:** start M5 (line, rectangle, ellipse, flood fill and eyedropper). Consider closing M4-11 (long-stroke undo cap) and M4-12 (HSV repaint latency) before or during M5, since both affect the new tools. M4-10 is profiled and closed; the measured numbers and remaining follow-ups are in `docs/performance.md`.
 
 ---
 
@@ -368,7 +371,9 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 - [x] M4-7 Implement undo/redo per §5.5 (tile snapshots, action ring, toast when an action is too large). *Fixed ~64 KB pool with 44 RLE + 7 raw tile records, up to 16 actions; captures per dab, converts to XOR deltas at commit, evicts the oldest action when full, and toasts when an action cannot be captured.*
 - [x] M4-8 Implement "New / Clear canvas" with confirmation. *Menu → New canvas opens `Sheet::ConfirmNew`; Cancel returns, Clear requests a canvas reset, clears undo/redo and shows a toast.*
 - [x] M4-9 Add brush-size picker with visual circles. *Size sheet with seven circles and labels; top-bar size icon reflects the active diameter.*
-- [ ] M4-10 Profile: stroke latency, fps for 1/8/24 px brushes, undo memory high-water mark. *Host preview validated; hardware measurement is blocked until a Pico is attached.*
+- [x] M4-10 Profile: stroke latency, fps for 1/8/24 px brushes, undo memory high-water mark. *Hardware-profiled 2026-10-24: 1 px ~139–152 µs/frame, 8 px ~143–153 µs, 24 px ~648–681 µs; first-dab flush 0.33–1.0 ms; 5 dots = 11 records / 1,372 B; heap flat at 57,008 B (normal) and 56,904 B (diag) for 5+ minutes. Long 8/24 px squiggles hit the 32-tile cap; HSV taps 90–103 ms. Follow-ups M4-11/M4-12.*
+- [ ] M4-11 (follow-up) Raise or restructure the per-action undo tile cap. *A 3.5 s 8 px squiggle and a 4.2 s 24 px squiggle exceeded 32 tile records and could not be undone; a 3.9 s 1 px stroke used 31 records / 4,560 B. Consider 48–51 tiles/action (+1–1.2 KB static RAM) or a compact action-level representation.*
+- [ ] M4-12 (follow-up) Reduce HSV repaint cost. *Hue tap 102.8 ms (S/V square 58.4 ms), S/V tap 90.3 ms, HSV open 179.1 ms. Clip the S/V cell loops to the dirty band first, then consider 32×32 cells or a direct full-sheet compose if still above 50 ms.*
 
 **Acceptance:** continuous strokes with no gaps; 10 undo levels for normal strokes; 8 px brush ≥30 fps; free heap stable after 5 minutes of drawing.
 
