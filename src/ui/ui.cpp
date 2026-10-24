@@ -187,6 +187,10 @@ void Ui::begin(uint32_t nowMs) {
   color_ = 0x0000;
   pressedButton_ = -1;
   pressedBack_ = false;
+  pressedCalibrate_ = false;
+  touchCalibrated_ = false;
+  calibrationStep_ = 0;
+  calibrationComplete_ = false;
   toastActive_ = false;
   toastUntil_ = 0;
   splashUntil_ = nowMs + 800;
@@ -203,6 +207,7 @@ void Ui::setScreen(Screen next) {
   sheet_ = Sheet::None;
   pressedButton_ = -1;
   pressedBack_ = false;
+  pressedCalibrate_ = false;
   // Do not carry a toast from the canvas over a placeholder screen.
   toastActive_ = false;
   dirty_.add(ui_layout::kScreen);
@@ -349,8 +354,10 @@ void Ui::activateSheetItem(Point p, uint32_t nowMs) {
 }
 
 void Ui::updatePlaceholder(const TouchFrame& frame) {
+  const Point p{frame.x, frame.y};
+
   if (frame.down) {
-    if (ui_layout::hitBackButton({frame.x, frame.y})) {
+    if (ui_layout::hitBackButton(p)) {
       pressedBack_ = true;
       dirty_.add(ui_layout::kBackButton);
     } else {
@@ -358,7 +365,7 @@ void Ui::updatePlaceholder(const TouchFrame& frame) {
     }
   }
 
-  if (frame.move && pressedBack_ && !ui_layout::hitBackButton({frame.x, frame.y})) {
+  if (frame.move && pressedBack_ && !ui_layout::hitBackButton(p)) {
     pressedBack_ = false;
     dirty_.add(ui_layout::kBackButton);
   }
@@ -368,11 +375,103 @@ void Ui::updatePlaceholder(const TouchFrame& frame) {
     pressedBack_ = false;
     if (wasPressed) {
       dirty_.add(ui_layout::kBackButton);
-      if (ui_layout::hitBackButton({frame.x, frame.y})) {
+      if (ui_layout::hitBackButton(p)) {
         setScreen(Screen::Canvas);
+        return;
       }
     }
   }
+
+  if (screen_ != Screen::Settings) {
+    return;
+  }
+
+  if (frame.down) {
+    if (ui_layout::kCalibrateButton.contains(p)) {
+      pressedCalibrate_ = true;
+      dirty_.add(ui_layout::kCalibrateButton);
+    } else {
+      pressedCalibrate_ = false;
+    }
+  }
+
+  if (frame.move && pressedCalibrate_ &&
+      !ui_layout::kCalibrateButton.contains(p)) {
+    pressedCalibrate_ = false;
+    dirty_.add(ui_layout::kCalibrateButton);
+  }
+
+  if (frame.up) {
+    const bool wasPressed = pressedCalibrate_;
+    pressedCalibrate_ = false;
+    if (wasPressed) {
+      dirty_.add(ui_layout::kCalibrateButton);
+      if (ui_layout::kCalibrateButton.contains(p)) {
+        startCalibration();
+      }
+    }
+  }
+}
+
+void Ui::startCalibration() {
+  calibrationStep_ = 0;
+  calibrationComplete_ = false;
+  calibrationResult_ = Calibration{};
+  for (CalibrationPoint& point : calibrationPoints_) {
+    point = CalibrationPoint{};
+  }
+  setScreen(Screen::Calibrate);
+}
+
+void Ui::updateCalibration(const TouchFrame& frame, uint32_t nowMs) {
+  if (!frame.down) {
+    return;
+  }
+
+  const Point p{frame.x, frame.y};
+  if (ui_layout::kCalibrationCancel.contains(p)) {
+    setScreen(Screen::Settings);
+    return;
+  }
+  if (calibrationStep_ >= 4) {
+    return;
+  }
+
+  const Point target = ui_layout::calibrationTarget(calibrationStep_);
+  const int32_t dx = static_cast<int32_t>(p.x) - target.x;
+  const int32_t dy = static_cast<int32_t>(p.y) - target.y;
+  if (dx * dx + dy * dy >
+      ui_layout::kCalibrationHitRadius * ui_layout::kCalibrationHitRadius) {
+    showToast("Touch the crosshair", nowMs);
+    return;
+  }
+  if (frame.rawX == 0 && frame.rawY == 0) {
+    showToast("Touch not read; try again", nowMs);
+    return;
+  }
+
+  calibrationPoints_[calibrationStep_] = {
+      static_cast<int32_t>(frame.rawX), static_cast<int32_t>(frame.rawY),
+      target.x, target.y};
+  ++calibrationStep_;
+
+  if (calibrationStep_ == 4) {
+    calibrationResult_ = makeFourPointCalibration(calibrationPoints_);
+    if (isCalibrationPlausible(calibrationResult_) &&
+        calibrationMatchesPoints(calibrationResult_, calibrationPoints_)) {
+      calibrationComplete_ = true;
+    } else {
+      calibrationStep_ = 0;
+      showToast("Calibration failed - try again", nowMs);
+    }
+  }
+  dirty_.add(ui_layout::kScreen);
+}
+
+void Ui::calibrationFinished(bool saved, uint32_t nowMs) {
+  touchCalibrated_ = true;
+  setScreen(Screen::Settings);
+  showToast(saved ? "Calibration saved" : "Calibration applied - save failed", nowMs);
 }
 
 void Ui::update(const TouchFrame& frame, uint32_t nowMs) {
@@ -390,6 +489,11 @@ void Ui::update(const TouchFrame& frame, uint32_t nowMs) {
   if (toastActive_ && static_cast<int32_t>(nowMs - toastUntil_) >= 0) {
     toastActive_ = false;
     dirty_.add(ui_layout::kToast);
+  }
+
+  if (screen_ == Screen::Calibrate) {
+    updateCalibration(frame, nowMs);
+    return;
   }
 
   if (screen_ != Screen::Canvas) {
@@ -450,6 +554,9 @@ void Ui::render(uint16_t* fb, int fbWidth, const Rect& clip) {
     case Screen::About:
     case Screen::Recovery:
       drawPlaceholder(fb, fbWidth, clip);
+      break;
+    case Screen::Calibrate:
+      drawCalibration(fb, fbWidth, clip);
       break;
   }
 
@@ -654,18 +761,24 @@ void Ui::drawPlaceholder(uint16_t* fb, int fbWidth, const Rect& clip) {
       break;
 
     case Screen::Settings: {
-      const char* lines[6] = {
+      const char* lines[5] = {
           "Rotation: 2 (fixed)",
           "Brightness: 100%",
-          "Touch: calibrated",
+          touchCalibrated_ ? "Touch: calibrated" : "Touch: factory map",
           "Storage: LittleFS 2 MB",
           "Wi-Fi & OTA: M7",
-          "Settings land in M8",
       };
-      for (int i = 0; i < 6; ++i) {
-        gfx::drawText(fb, fbWidth, clip, {20, static_cast<int16_t>(90 + i * 32)},
-                      lines[i], i == 5 ? kTextDim : kText, 2);
+      for (int i = 0; i < 5; ++i) {
+        gfx::drawText(fb, fbWidth, clip, {20, static_cast<int16_t>(84 + i * 32)},
+                      lines[i], kText, 2);
       }
+
+      drawButtonFrame(fb, fbWidth, clip, ui_layout::kCalibrateButton,
+                      pressedCalibrate_, false, false);
+      drawTextCentered(fb, fbWidth, clip, ui_layout::kCalibrateButton,
+                       "Calibrate touch", kText, 2);
+      drawTextCentered(fb, fbWidth, clip, {0, 324, 320, 20},
+                       "Touch each corner in order", kTextDim, 2);
       break;
     }
 
@@ -681,7 +794,7 @@ void Ui::drawPlaceholder(uint16_t* fb, int fbWidth, const Rect& clip) {
       gfx::drawText(fb, fbWidth, clip, {20, 244}, "ILI9488 320x480", kText, 2);
       gfx::drawText(fb, fbWidth, clip, {20, 272}, "HR2046 touch", kText, 2);
       gfx::drawText(fb, fbWidth, clip, {20, 300}, "LittleFS 2 MB", kText, 2);
-      gfx::drawText(fb, fbWidth, clip, {20, 340}, "M3 immediate-mode UI", kTextDim, 2);
+      gfx::drawText(fb, fbWidth, clip, {20, 340}, "M3 UI + calibration", kTextDim, 2);
       break;
     }
 
@@ -695,6 +808,38 @@ void Ui::drawPlaceholder(uint16_t* fb, int fbWidth, const Rect& clip) {
     default:
       break;
   }
+}
+
+void Ui::drawCalibration(uint16_t* fb, int fbWidth, const Rect& clip) {
+  gfx::fillRect(fb, fbWidth, clip, ui_layout::kScreen, kSplashBg);
+  drawTextCentered(fb, fbWidth, clip, {0, 10, 320, 24}, "Touch calibration", kWhite, 2);
+
+  char buffer[48];
+  if (calibrationStep_ < 4) {
+    static const char* const kCornerNames[4] = {
+        "top-left", "top-right", "bottom-left", "bottom-right"};
+    std::snprintf(buffer, sizeof(buffer), "Step %u of 4 - %s",
+                  static_cast<unsigned>(calibrationStep_ + 1),
+                  kCornerNames[calibrationStep_]);
+  } else {
+    std::snprintf(buffer, sizeof(buffer), "Applying...");
+  }
+  drawTextCentered(fb, fbWidth, clip, {0, 40, 320, 20}, buffer, kTextDim, 2);
+
+  if (calibrationStep_ < 4) {
+    const Point target = ui_layout::calibrationTarget(calibrationStep_);
+    constexpr int arm = 16;
+    gfx::hline(fb, fbWidth, clip, target.x - arm, target.y, arm * 2 + 1, kAccent);
+    gfx::vline(fb, fbWidth, clip, target.x, target.y - arm, arm * 2 + 1, kAccent);
+    gfx::drawCircle(fb, fbWidth, clip, target, 12, kWhite);
+    gfx::fillCircle(fb, fbWidth, clip, target, 2, kAccent);
+  } else {
+    drawTextCentered(fb, fbWidth, clip, {0, 210, 320, 24}, "Calibration complete",
+                     kAccent, 2);
+  }
+
+  drawButtonFrame(fb, fbWidth, clip, ui_layout::kCalibrationCancel, false, false, false);
+  drawTextCentered(fb, fbWidth, clip, ui_layout::kCalibrationCancel, "Cancel", kText, 2);
 }
 
 void Ui::drawToast(uint16_t* fb, int fbWidth, const Rect& clip) {

@@ -6,14 +6,15 @@ Measured 2026-10-24 with the pinned RP2350 platform:
 
 | Environment | RAM | Flash |
 |---|---:|---:|
-| `pico2w_usb` | 72,656 B (13.9%) | 343,264 B (16.4%) |
-| `pico2w_ota` | 72,656 B (13.9%) | 343,272 B (16.4%) |
-| `pico2w_diag` | 72,728 B (13.9%) | 343,776 B (16.4%) |
+| `pico2w_usb` | 72,768 B (13.9%) | 346,872 B (16.6%) |
+| `pico2w_ota` | 72,768 B (13.9%) | 346,864 B (16.6%) |
+| `pico2w_diag` | 72,840 B (13.9%) | 347,384 B (16.6%) |
 
 The 320×480 RGB565 framebuffer is allocated from the heap at boot
 (307,200 B). The M1 firmware reported 452,472 B free before that allocation.
-After the framebuffer allocation, the M3 firmware reports **142,800 B free**
-(allocator overhead included; M2 reported 143,360 B).
+After the framebuffer allocation, the M3 calibration build reports **142,688 B
+free** (allocator overhead included; the reboot build reported 142,760 B; M2
+reported 143,360 B).
 
 ## M2 display benchmarks
 
@@ -28,11 +29,11 @@ The diagnostics build runs the benchmarks before starting the UI, then prints
 the initial splash flush time:
 
 ```
-[bench] fillScreen 320x480: 117756 us
-[bench] 64x64 rect flush: 3843 us
-[bench] 432px line flush: 311 us
-[bench] full-screen flush: 139283 us
-[disp] splash flush: 139260 us
+[bench] fillScreen 320x480: 117748 us
+[bench] 64x64 rect flush: 3851 us
+[bench] 432px line flush: 304 us
+[bench] full-screen flush: 139308 us
+[disp] splash flush: 139303 us
 [ui] flush 1/2 x,y wxh: ... us
 ```
 
@@ -56,13 +57,13 @@ which meets the target.
 | 432 px line flush | pending | **0.311 ms** | — |
 | Full-screen framebuffer flush | 200.8 ms | **139.3 ms** | ≤150 ms @ 40 MHz ✅ |
 | Splash / full-screen UI flush | 200.8 ms | **139.3 ms** | ≤150 ms ✅ |
-| Free heap after framebuffer | **143,360 B** (M2) | **142,800 B** (M3) | ≥24 KB after Wi-Fi |
+| Free heap after framebuffer | **143,360 B** (M2) | **142,688 B** (M3 calibration) | ≥24 KB after Wi-Fi |
 
 The 27 MHz value is from `[disp] diagnostics flush: 200792 us` on 2026-10-24,
 before the conversion-loop optimization. The 40 MHz values are from the M3
 hardware run on the same day. The panel was stable at 40 MHz with no tearing or
 corruption, so the ≤150 ms M2 target is met. The M3 splash uses the same
-full-screen flush path and measured 139,260 us.
+full-screen flush path and measured 139,303 us.
 
 The normal `pico2w_usb` build does not print the separate `[bench]` lines; flash
 `pico2w_diag` to collect the individual fillScreen/rect/line numbers and the
@@ -76,11 +77,13 @@ event, then flushes the accumulated dirty rectangles:
 | Event | Dirty regions | Measured on hardware |
 |---|---|---|
 | Top-bar press/release | one 44×44 button | **1.85–1.98 ms** |
-| Toast show/expire | 288×36 toast | **9.44 ms** |
+| Settings "Calibrate touch" | 280×44 button | **11.2 ms** |
+| Toast show/expire | 288×36 toast | **9.4–9.5 ms** |
 | Tools sheet open/close | 44×44 button + 320×180 sheet | 52.3 ms sheet, **≈54 ms total** |
 | Palette sheet open/close | 44×44 button + 320×220 sheet | 63.9 ms sheet, **≈66 ms total** |
 | Size sheet open/close | 44×44 button + 320×120 sheet | 34.9 ms sheet, **≈37 ms total** |
 | Menu sheet open/close | 44×44 button + 320×340 sheet | 98.7 ms sheet, **≈101 ms total** |
+| Calibration step | full 320×480 | **139.4 ms** |
 | Screen transition | full 320×480 | **139.3 ms** |
 
 The sheet times are the measured `[ui] flush` values plus the measured ~1.9 ms
@@ -96,6 +99,12 @@ UI-interaction target, so large sheet transitions may need a partial-canvas
 strategy, a faster SPI clock, or a shorter sheet. Sheet dimming is intentionally
 omitted for now because it would expand every sheet flush to the full canvas
 above the sheet.
+
+The guided calibration flow repaints the full screen when the crosshair advances
+(four steps, each measured at ~139.4 ms). The first calibration run saved
+`/config.bin`; a reboot loaded and applied it, logging `[cfg] touch calibration
+applied`. This is acceptable for a one-time setup flow and keeps the crosshair
+crisp.
 
 Keep the fastest stable SPI clock in `include/config.h` (`kDisplaySpiHz`); if
 40 MHz shows corruption, fall back to 27 MHz and note it here.

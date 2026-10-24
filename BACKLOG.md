@@ -1,7 +1,7 @@
 # Pico Paint — Backlog & Implementation Plan
 
 **Target hardware:** Raspberry Pi Pico 2 W (RP2350, 4 MB flash, 520 KB SRAM) + 4" 480×320 ILI9488 SPI TFT (used in **portrait 320×480**) with **HR2046 / XPT2046-compatible** resistive touch
-**Status:** M0–M3 hardware-verified; M3 UI shell on-device verified; calibration persistence and guided calibration remain
+**Status:** M0–M3 complete and hardware-verified (UI shell + guided calibration persistence); M4 drawing engine next
 **Last updated:** 2026-10-24
 
 ---
@@ -38,20 +38,22 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - M1 skeleton is in place and **hardware-verified on 2026-10-24**: serial banner, LittleFS `total=2097152 used=8192 free=2088960`, free heap 452,472 B. The onboard backlight driver is confirmed: `LED` tied to 3V3 through 10k lights the panel.
 - M2 implementation is in place: ILI9488 init/rotation/address-window driver, RGB565→RGB666 line-buffer flush, `gfx` primitives (rect, hline/vline, line, circle, fillCircle, text, blit), 5×7 font, dirty-region helper, benchmarks and the original diagnostics screen (now retired from the normal boot).
 - Builds verified on 2026-10-24:
-  - `pico2w_usb`: **SUCCESS** — RAM 72,656 B (13.9%), flash 343,264 B (16.4%)
-  - `pico2w_ota`: **SUCCESS** — RAM 72,656 B, flash 343,272 B
-  - `pico2w_diag`: **SUCCESS** — RAM 72,728 B (13.9%), flash 343,776 B (16.4%)
-- Native tests pass under WSL g++ (21/21, including the disjoint-rect dirty-region, touch-calibration, touch-state, font-range and UI-layout tests). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
+  - `pico2w_usb`: **SUCCESS** — RAM 72,768 B (13.9%), flash 346,872 B (16.6%)
+  - `pico2w_ota`: **SUCCESS** — RAM 72,768 B, flash 346,864 B
+  - `pico2w_diag`: **SUCCESS** — RAM 72,840 B (13.9%), flash 347,384 B (16.6%)
+- Native tests pass under WSL g++ (24/24, including the disjoint-rect dirty-region, calibration, settings-codec, touch-state, font-range and UI-layout tests). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
 - M2 is hardware-verified: correct colours, upright portrait at rotation 2, no offset/clipping, stable 40 MHz SPI, 139.3 ms full-screen flush, 143,360 B free heap after the framebuffer.
 - M3-1 is hardware-validated: the HR2046 responds on SPI1 at all four corners. Raw ranges are roughly X 260–3880 and Y 298–3807. The normal build prints `down`, `up`, `tap` and `long-press`; `pico2w_diag` additionally prints `move`, raw samples and UI flush timings.
-- M3-2 calibration is implemented as a full Q16.16 affine least-squares fit from four corner samples. The panel's raw axes are rotated 90° relative to the display (raw X top→bottom, raw Y left→right), so the transform includes cross terms; all four corners map within ~1 px. Persistence in `/config.bin` and the guided calibration screen (M3-8) remain.
+- M3-2 calibration is implemented as a full Q16.16 affine least-squares fit from four corner samples. The panel's raw axes are rotated 90° relative to the display (raw X top→bottom, raw Y left→right), so the transform includes cross terms; all four corners map within ~1 px. Settings are stored in `/config.bin` with a magic/version/FNV-1a checksum header and atomic `/config.tmp` → rename replacement; implausible or corrupt calibration falls back to the factory map.
 - M3-3 touch state machine is implemented: two-sample press/release debounce, 2 px move threshold, tap detection (≤10 px travel), one-shot 600 ms long-press, and a frame structure for the UI. The diagnostics build prints `down`, `move`, `up`, `tap` and `long-press` events.
 - M3-4/M3-5/M3-6 UI shell is implemented: `Ui` layout and hit testing, 48 px top bar with six 44×44 buttons, blank paper canvas, vector icons, tools/palette/size/menu bottom sheets, toast, and Gallery/Settings/About/Recovery placeholders. The 5×7 font now indexes the full 256-glyph table from ASCII 0, which fixed the garbled host-preview text.
-- The UI has been rendered on the host at 320×480 for splash, canvas, every sheet, placeholders and toast, and is now hardware-verified on 2026-10-24: splash → canvas, all six top-bar buttons, tools/palette/size/menu sheets, toasts, and Gallery/Settings/About back navigation. Free heap is **142,800 B**.
+- M3-8/M3-9 guided calibration is implemented and hardware-verified on 2026-10-24: Settings → **Calibrate touch** shows four inset crosshairs (top-left, top-right, bottom-left, bottom-right), captures the raw sample on each debounced press, validates the affine fit against all four targets, applies it immediately and saves it to `/config.bin`. The first run saved coefficients `a=-74 b=-5649 c=341 d=8463 e=-41 f=-26`; after reboot the firmware logged `[cfg] loaded /config.bin` and `[cfg] touch calibration applied`. Rotation remains locked to 2.
+- The UI has been rendered on the host at 320×480 for splash, canvas, every sheet, placeholders and toast, and is now hardware-verified on 2026-10-24: splash → canvas, all six top-bar buttons, tools/palette/size/menu sheets, toasts, and Gallery/Settings/About back navigation. Free heap is **142,688 B** on the calibration build (142,760 B on the later reboot build).
+- Measured calibration-flow flushes: Settings **Calibrate touch** button (280×44) 11.2 ms, "Calibration saved" toast (288×36) 9.5 ms, and each full-screen crosshair step ≈139.4 ms. The earlier sheet-button optimization is confirmed: opening the menu flushed only `258,2 44×44` (1.87 ms) plus the sheet, not the whole top bar.
 - Measured M3 UI flushes: 44×44 top-bar button 1.85–1.98 ms; 288×36 toast 9.44 ms; sheet flushes 34.9–98.7 ms; full-screen transition 139.3 ms. `setSheet()` now dirties only the affected 44×44 button(s) instead of the whole 320×48 bar, saving ~12 ms per sheet transition. Details in `docs/performance.md`.
 - Git repository initialized (`main`); M1, M2, the M3 touch driver and the M3 UI shell are committed.
 
-**Next action:** finish touch-calibration persistence (M3-2), add the guided calibration screen (M3-8) and verify calibration survives reboot (M3-9), then move to the M4 canvas buffer/drawing engine. Reflash the button-dirty optimization when convenient to confirm sheet totals drop to ≈54/66/37/101 ms.
+**Next action:** commit the M3 calibration work and start the M4 canvas buffer/drawing engine. M3-9 is complete; the only M3 performance caveat is that the large palette/menu sheets flush in 37–101 ms (generic buttons and toasts are <12 ms).
 
 ---
 
@@ -336,18 +338,18 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 **Goal:** a calibrated, responsive UI that feels like a device, not a dev board.
 
 - [x] M3-1 Implement `ITouch`; `Xpt2046Touch` on SPI1 at ~2 MHz (mode 0), median-of-3 + EMA filtering. *Implemented with pipelined Z1/Z2/X/Y reads, pressure threshold and EMA. Hardware-validated on 2026-10-24 at all four corners.*
-- [ ] M3-2 Implement 4-point calibration; solve and store a 6-coefficient affine transform (Q16.16) in `/config.bin`. *Full Q16.16 affine least-squares fit from four corners is implemented and maps all corners within ~1 px. Persistence and guided capture remain.*
+- [x] M3-2 Implement 4-point calibration; solve and store a 6-coefficient affine transform (Q16.16) in `/config.bin`. *Implemented: affine least-squares fit, plausibility/residual checks, versioned 40-byte config with FNV-1a checksum and atomic temp-file replacement.*
 - [x] M3-3 Implement the touch state machine: down / move / up, movement threshold, long-press, tap. *Implemented with debounce, 2 px move threshold, tap detection, one-shot long-press and native tests.*
 - [x] M3-4 Build the immediate-mode UI core: layout, buttons, modal sheets, toast, hit testing. *Toggles and sliders are not used by the M3 screens; they will land with the M8 settings screen.*
 - [x] M3-5 Add icons and the 5×7 font assets; establish a consistent 44×44 px minimum touch target. *Compact vector icons are drawn in `src/ui/ui.cpp`; the 1-bit `icons.h` structure is reserved for the M8 polished set. All top-bar targets are 44×44 px.*
 - [x] M3-6 Implement screens: splash, canvas shell (top bar + blank canvas), menu sheet, placeholder gallery/settings. *Also includes tools, palette and brush-size sheets plus About and Recovery placeholders.*
 - [x] M3-7 Add the cooperative main loop with a frame budget and a watchdog. *10 ms touch poll, immediate UI update, partial dirty flush, 1 ms idle delay; the banded display flush feeds the watchdog every 16 rows. Explicit frame-budget instrumentation is deferred to M4 profiling.*
-- [ ] M3-8 Add a touch-calibration screen with crosshairs and a "save" step.
-- [ ] M3-9 Verify calibration survives reboot and works in all four rotations (or lock to one).
+- [x] M3-8 Add a touch-calibration screen with crosshairs and a "save" step. *Four inset crosshairs, per-press raw capture, fit validation and automatic save; Cancel returns to Settings.*
+- [x] M3-9 Verify calibration survives reboot and works in all four rotations (or lock to one). *Verified on hardware 2026-10-24: the first boot saved `/config.bin`; the reboot loaded and applied it. Rotation stays locked to 2.*
 
 **Acceptance:** touch accuracy ±2 px at screen centre; no stuck/double taps; calibration persists; UI interaction <50 ms; splash → canvas <2.5 s.
 
-**Status (2026-10-24):** touch accuracy and gesture handling verified on hardware; UI shell implemented and host-previewed. Calibration persistence and on-device UI latency still need verification.
+**Status (2026-10-24): complete.** Touch accuracy, gesture handling, UI shell and calibration persistence are verified on hardware. Generic button/toast flushes are <12 ms; full-screen transitions are ~139 ms and the large palette/menu sheets remain 37–101 ms, deferred as a performance refinement rather than an M3 blocker.
 
 ---
 

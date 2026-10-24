@@ -19,6 +19,7 @@ enum class Screen : uint8_t {
   Canvas,
   Gallery,
   Settings,
+  Calibrate,
   About,
   Recovery,
 };
@@ -57,6 +58,21 @@ constexpr Rect kButtons[6] = {
     {258, 2, 44, 44},
 };
 constexpr Rect kBackButton{18, 2, 44, 44};
+
+// Settings > Calibrate touch, and the guided four-corner screen.
+constexpr Rect kCalibrateButton{20, 268, 280, 44};
+constexpr Rect kCalibrationCancel{120, 440, 80, 32};
+constexpr Point kCalibrationTargets[4] = {
+    {28, 96},   // top-left
+    {292, 96},  // top-right
+    {28, 408},  // bottom-left
+    {292, 408}, // bottom-right
+};
+constexpr int kCalibrationHitRadius = 56;
+
+constexpr Point calibrationTarget(int index) {
+  return (index >= 0 && index < 4) ? kCalibrationTargets[index] : Point{};
+}
 
 constexpr Rect kSheetTools{0, 300, 320, 180};
 constexpr Rect kSheetPalette{0, 260, 320, 220};
@@ -215,6 +231,19 @@ class Ui {
   uint8_t brushSize() const { return brushSize_; }
   uint16_t color() const { return color_; }
 
+  // The main loop applies and persists a completed calibration, then calls
+  // calibrationFinished() so the UI can show the result.
+  void setTouchCalibrated(bool calibrated) { touchCalibrated_ = calibrated; }
+  bool takeCalibration(Calibration& out) {
+    if (!calibrationComplete_) {
+      return false;
+    }
+    out = calibrationResult_;
+    calibrationComplete_ = false;
+    return true;
+  }
+  void calibrationFinished(bool saved, uint32_t nowMs);
+
  private:
   void setScreen(Screen next);
   void setSheet(Sheet next);
@@ -223,12 +252,15 @@ class Ui {
   void handleCanvasTap(Point p, uint32_t nowMs);
   void activateSheetItem(Point p, uint32_t nowMs);
   void updatePlaceholder(const TouchFrame& frame);
+  void startCalibration();
+  void updateCalibration(const TouchFrame& frame, uint32_t nowMs);
 
   void drawSplash(uint16_t* fb, int fbWidth, const Rect& clip);
   void drawCanvasScreen(uint16_t* fb, int fbWidth, const Rect& clip);
   void drawTopBar(uint16_t* fb, int fbWidth, const Rect& clip);
   void drawSheet(uint16_t* fb, int fbWidth, const Rect& clip);
   void drawPlaceholder(uint16_t* fb, int fbWidth, const Rect& clip);
+  void drawCalibration(uint16_t* fb, int fbWidth, const Rect& clip);
   void drawToast(uint16_t* fb, int fbWidth, const Rect& clip);
 
   Screen screen_ = Screen::Splash;
@@ -238,9 +270,15 @@ class Ui {
   uint16_t color_ = 0x0000;
   int8_t pressedButton_ = -1;
   bool pressedBack_ = false;
+  bool pressedCalibrate_ = false;
+  bool touchCalibrated_ = false;
   bool toastActive_ = false;
   uint32_t toastUntil_ = 0;
   uint32_t splashUntil_ = 0;
+  uint8_t calibrationStep_ = 0;
+  CalibrationPoint calibrationPoints_[4] = {};
+  Calibration calibrationResult_;
+  bool calibrationComplete_ = false;
   char toast_[40] = {};
   DirtyRegion dirty_;
 };

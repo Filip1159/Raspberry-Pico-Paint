@@ -23,6 +23,12 @@ struct TouchFrame {
   int16_t y = 0;
   int16_t startX = 0;
   int16_t startY = 0;
+
+  // Raw controller values for the current sample, filled in by the main loop.
+  // Used by the guided calibration screen; zero when the panel is released.
+  uint16_t rawX = 0;
+  uint16_t rawY = 0;
+
   uint32_t durationMs = 0;
 };
 

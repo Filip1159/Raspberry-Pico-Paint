@@ -13,11 +13,13 @@ the diagnostics screen (since retired) — is hardware-verified: correct colours
 (touch input and UI shell) is hardware-verified: XPT2046/HR2046 driver, 4-point
 affine calibration, debounced touch state machine, and an immediate-mode UI with
 an 800 ms splash, canvas, 48 px top bar, tools/palette/brush-size/menu bottom
-sheets, toasts, and placeholder Gallery/Settings/About screens. Calibration
-persistence and the guided calibration screen are the remaining M3 work. The
-paint engine lands in M4–M6; OTA lands in M7. See [`BACKLOG.md`](BACKLOG.md) for
-the full plan and [`docs/performance.md`](docs/performance.md) for benchmark
-results.
+sheets, toasts, and placeholder Gallery/Settings/About screens. Settings →
+**Calibrate touch** runs a four-crosshair guided calibration and saves the
+result to `/config.bin`; the saved transform is loaded on boot. This was
+verified on hardware: the first run saved the calibration and a reboot applied
+it. M3 is complete; the paint engine lands in M4–M6 and OTA lands in M7. See
+[`BACKLOG.md`](BACKLOG.md) for the full plan and
+[`docs/performance.md`](docs/performance.md) for benchmark results.
 
 ## Hardware
 
@@ -90,10 +92,14 @@ The `pico2w_diag` build additionally prints `[touch] move` and raw
 `[touch] raw=... z=... mapped=... pressed=...` samples. There is no touch
 crosshair in the normal build; use the UI and the serial events for bring-up.
 
-The calibration uses four corner samples in this order: top-left, top-right,
-bottom-left, bottom-right. The raw touch axes are rotated 90° relative to the
-display, so the affine transform includes cross terms. Expected mapped corners
-are `(0,0)`, `(319,0)`, `(0,479)` and `(319,479)`.
+On the device, open **Menu → Settings → Calibrate touch** and touch the four
+crosshairs in this order: top-left, top-right, bottom-left, bottom-right. The
+firmware fits a full affine transform (the raw axes are rotated 90° relative to
+the display, so cross terms are included), checks it against the four samples
+and saves it to `/config.bin`. On boot the saved transform is loaded and
+applied; without a valid saved file the factory map is used. The factory map
+comes from full-corner samples and maps the corners to `(0,0)`, `(319,0)`,
+`(0,479)` and `(319,479)`.
 
 ## OTA updates
 
@@ -127,6 +133,7 @@ include/
 src/
   main.cpp              boot, filesystem, UI loop, heartbeat
   display/              ILI9488 driver and graphics primitives
+  storage/              settings persistence (/config.bin)
   ui/                   immediate-mode UI shell and 5×7 bitmap font
 test/
   test_native/          host unit tests (Unity)

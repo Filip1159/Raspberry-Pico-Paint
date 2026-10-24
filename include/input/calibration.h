@@ -1,8 +1,9 @@
 #pragma once
 
 // 4-point touch calibration.
-// Coefficients are stored in Q16.16 fixed point. Header-only so the native
-// tests can exercise the math without pulling in the Arduino build.
+// The linear coefficients a,b,d,e are Q16.16 fixed point; the offsets c,f are
+// in screen pixels. Header-only so the native tests can exercise the math
+// without pulling in the Arduino build.
 
 #include <cmath>
 #include <cstdint>
@@ -111,6 +112,49 @@ inline Point applyCalibration(const Calibration& cal, int32_t rawX, int32_t rawY
 
   return Point{detail::clampScreen(x, config::kScreenWidth - 1),
                detail::clampScreen(y, config::kScreenHeight - 1)};
+}
+
+// Check that the fitted transform reproduces the four samples that produced it.
+inline bool calibrationMatchesPoints(const Calibration& cal,
+                                     const CalibrationPoint points[4],
+                                     int tolerancePx = 20) {
+  const int32_t toleranceSq = tolerancePx * tolerancePx;
+  for (int i = 0; i < 4; ++i) {
+    const Point mapped = applyCalibration(cal, points[i].rawX, points[i].rawY);
+    const int32_t dx = static_cast<int32_t>(mapped.x) - points[i].screenX;
+    const int32_t dy = static_cast<int32_t>(mapped.y) - points[i].screenY;
+    if (dx * dx + dy * dy > toleranceSq) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Reject a singular or wildly out-of-range fit before using or persisting it.
+// The expected coefficients for this panel are roughly |a|,|e| < 100 and
+// |b|,|d| < 10,000 in Q16.16 (raw values span about 4,000 counts), so the
+// limits below accept normal calibration while catching zeroed/corrupt data.
+inline bool isCalibrationPlausible(const Calibration& cal) {
+  constexpr int64_t kMaxCoefficient = 30000;
+  constexpr int64_t kMaxOffset = 4000;
+
+  const int64_t a = cal.a;
+  const int64_t b = cal.b;
+  const int64_t c = cal.c;
+  const int64_t d = cal.d;
+  const int64_t e = cal.e;
+  const int64_t f = cal.f;
+
+  const int64_t aa = a < 0 ? -a : a;
+  const int64_t ab = b < 0 ? -b : b;
+  const int64_t ac = c < 0 ? -c : c;
+  const int64_t ad = d < 0 ? -d : d;
+  const int64_t ae = e < 0 ? -e : e;
+  const int64_t af = f < 0 ? -f : f;
+
+  return aa <= kMaxCoefficient && ab <= kMaxCoefficient && ac <= kMaxOffset &&
+         ad <= kMaxCoefficient && ae <= kMaxCoefficient && af <= kMaxOffset &&
+         (aa != 0 || ab != 0) && (ad != 0 || ae != 0);
 }
 
 }  // namespace paint

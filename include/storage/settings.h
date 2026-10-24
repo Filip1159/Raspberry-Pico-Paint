@@ -1,7 +1,8 @@
 #pragma once
 
-// Persisted device settings (implementation lands in M3/M6).
-// Kept separate from include/config.h to avoid name confusion.
+// Persisted device settings. Calibration persistence landed in M3; the remaining
+// fields are filled in by the M8 settings screen. Kept separate from
+// include/config.h to avoid name confusion.
 
 #include <cstdint>
 

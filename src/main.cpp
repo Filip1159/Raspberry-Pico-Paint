@@ -8,9 +8,11 @@
 #include "display/dirty.h"
 #include "display/gfx.h"
 #include "display/ili9488.h"
+#include "input/calibration.h"
 #include "input/touch.h"
 #include "input/touch_state.h"
 #include "paint/color.h"
+#include "storage/settings.h"
 #include "ui/ui.h"
 #include "version.h"
 
@@ -30,7 +32,9 @@ paint::DirtyRegion gDirty;
 paint::Xpt2046Touch gTouch;
 paint::TouchStateMachine gTouchState;
 paint::Ui gUi;
+paint::Settings gSettings;
 uint16_t* gFramebuffer = nullptr;
+bool gSettingsLoaded = false;
 
 void printBanner() {
   Serial.println();
@@ -42,7 +46,7 @@ void printBanner() {
                 static_cast<unsigned long>(F_CPU / 1000000UL));
   Serial.printf("  display : ILI9488 %dx%d (portrait)\n",
                 paint::config::kScreenWidth, paint::config::kScreenHeight);
-  Serial.println("  stage   : M3 touch + UI shell");
+  Serial.println("  stage   : M3 touch + UI + calibration");
   Serial.println("========================================");
 }
 
@@ -127,6 +131,9 @@ void setup() {
 
   if (mountFilesystem()) {
     printFilesystemStats();
+    gSettingsLoaded = paint::loadSettings(gSettings);
+    Serial.printf("[cfg] %s\n",
+                  gSettingsLoaded ? "loaded /config.bin" : "no saved settings");
   } else {
     Serial.println("[fs] unavailable; saving will be disabled");
   }
@@ -152,11 +159,19 @@ void setup() {
                 static_cast<unsigned long>(rp2040.getFreeHeap()));
 
   Serial.println("[touch] initialising HR2046/XPT2046 on SPI1");
+  const bool touchCalibrated =
+      gSettingsLoaded && paint::isCalibrationPlausible(gSettings.calibration);
   if (!gTouch.begin()) {
     Serial.println("[touch] init failed");
   } else {
     Serial.printf("[touch] ready, SPI1 %lu Hz\n",
                   static_cast<unsigned long>(paint::config::kTouchSpiHz));
+    if (touchCalibrated) {
+      gTouch.setCalibration(gSettings.calibration);
+      Serial.println("[cfg] touch calibration applied");
+    } else if (gSettingsLoaded) {
+      Serial.println("[cfg] saved settings have no valid calibration");
+    }
   }
 
 #ifdef PAINT_DIAG
@@ -164,6 +179,7 @@ void setup() {
 #endif
 
   gUi.begin(millis());
+  gUi.setTouchCalibrated(touchCalibrated);
   gUi.render(gFramebuffer, kFbWidth, kScreenRect);
   const paint::Rect initialDirty = gUi.takeDirty();
   const uint32_t start = micros();
@@ -208,6 +224,10 @@ void loop() {
     paint::TouchPoint point;
     if (gTouch.read(point, raw)) {
       frame = gTouchState.update(point, now);
+      if (raw.pressed) {
+        frame.rawX = raw.x;
+        frame.rawY = raw.y;
+      }
 
       if (frame.down) {
         Serial.printf("[touch] down x=%d y=%d\n", frame.x, frame.y);
@@ -246,6 +266,23 @@ void loop() {
   }
 
   gUi.update(frame, now);
+
+  paint::Calibration newCalibration;
+  if (gUi.takeCalibration(newCalibration)) {
+    gTouch.setCalibration(newCalibration);
+    gSettings.calibration = newCalibration;
+    const bool saved = paint::saveSettings(gSettings);
+    gSettingsLoaded = gSettingsLoaded || saved;
+    gUi.calibrationFinished(saved, now);
+    Serial.printf("[cal] a=%ld b=%ld c=%ld d=%ld e=%ld f=%ld saved=%d\n",
+                  static_cast<long>(newCalibration.a),
+                  static_cast<long>(newCalibration.b),
+                  static_cast<long>(newCalibration.c),
+                  static_cast<long>(newCalibration.d),
+                  static_cast<long>(newCalibration.e),
+                  static_cast<long>(newCalibration.f), saved ? 1 : 0);
+  }
+
   gUi.render(gFramebuffer, kFbWidth, kScreenRect);
 
   if (gUi.dirty()) {

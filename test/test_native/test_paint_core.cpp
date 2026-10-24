@@ -6,6 +6,7 @@
 #include "input/touch_state.h"
 #include "paint/color.h"
 #include "paint/geometry.h"
+#include "storage/settings_codec.h"
 #include "ui/font5x7.h"
 #include "ui/ui.h"
 
@@ -150,6 +151,60 @@ static void test_touch_calibration_center_and_clamp() {
   p = applyCalibration(cal, 4095, 4095);
   TEST_ASSERT_EQUAL_INT(0, p.x);
   TEST_ASSERT_EQUAL_INT(479, p.y);
+}
+
+static void test_touch_calibration_plausibility() {
+  const CalibrationPoint points[4] = {
+      {301, 3795, 0, 0},      // top-left
+      {260, 298, 319, 0},     // top-right
+      {3862, 3787, 0, 479},   // bottom-left
+      {3845, 301, 319, 479},  // bottom-right
+  };
+  const Calibration cal = makeFourPointCalibration(points);
+  TEST_ASSERT_TRUE(isCalibrationPlausible(cal));
+  TEST_ASSERT_TRUE(calibrationMatchesPoints(cal, points));
+
+  CalibrationPoint wrong[4] = {
+      {301, 3795, 0, 0},
+      {260, 298, 200, 0},
+      {3862, 3787, 0, 479},
+      {3845, 301, 319, 479},
+  };
+  TEST_ASSERT_FALSE(calibrationMatchesPoints(cal, wrong, 5));
+
+  Calibration zero;
+  TEST_ASSERT_FALSE(isCalibrationPlausible(zero));
+
+  Calibration absurd = panelCalibration();
+  absurd.d = 200000;
+  TEST_ASSERT_FALSE(isCalibrationPlausible(absurd));
+}
+
+static void test_settings_codec_round_trip() {
+  Settings source;
+  source.rotation = 2;
+  source.brightness = 173;
+  source.otaEnabled = false;
+  source.calibration = panelCalibration();
+
+  uint8_t blob[settings_codec::kBlobSize] = {};
+  settings_codec::encode(source, blob);
+
+  Settings decoded;
+  TEST_ASSERT_TRUE(settings_codec::decode(blob, sizeof(blob), decoded));
+  TEST_ASSERT_EQUAL_INT(source.rotation, decoded.rotation);
+  TEST_ASSERT_EQUAL_INT(source.brightness, decoded.brightness);
+  TEST_ASSERT_EQUAL_INT(source.otaEnabled, decoded.otaEnabled);
+  TEST_ASSERT_EQUAL_INT(source.calibration.a, decoded.calibration.a);
+  TEST_ASSERT_EQUAL_INT(source.calibration.b, decoded.calibration.b);
+  TEST_ASSERT_EQUAL_INT(source.calibration.c, decoded.calibration.c);
+  TEST_ASSERT_EQUAL_INT(source.calibration.d, decoded.calibration.d);
+  TEST_ASSERT_EQUAL_INT(source.calibration.e, decoded.calibration.e);
+  TEST_ASSERT_EQUAL_INT(source.calibration.f, decoded.calibration.f);
+
+  blob[8] ^= 0x01;
+  TEST_ASSERT_FALSE(settings_codec::decode(blob, sizeof(blob), decoded));
+  TEST_ASSERT_FALSE(settings_codec::decode(blob, sizeof(blob) - 1, decoded));
 }
 
 static TouchPoint touchSample(int16_t x, int16_t y, bool pressed) {
@@ -350,6 +405,21 @@ static void test_ui_layout_sheet_buttons() {
   TEST_ASSERT_EQUAL_INT(5, ui_layout::sheetButton(Sheet::Menu));
 }
 
+static void test_ui_layout_calibration() {
+  TEST_ASSERT_TRUE(ui_layout::kCalibrateButton.bottom() <= config::kScreenHeight);
+  TEST_ASSERT_TRUE(ui_layout::kCalibrationCancel.bottom() <= config::kScreenHeight);
+  TEST_ASSERT_TRUE(ui_layout::kCalibrateButton.contains({20, 268}));
+  TEST_ASSERT_TRUE(ui_layout::kCalibrationCancel.contains({120, 440}));
+
+  TEST_ASSERT_EQUAL_INT(28, ui_layout::calibrationTarget(0).x);
+  TEST_ASSERT_EQUAL_INT(96, ui_layout::calibrationTarget(0).y);
+  TEST_ASSERT_EQUAL_INT(292, ui_layout::calibrationTarget(1).x);
+  TEST_ASSERT_EQUAL_INT(408, ui_layout::calibrationTarget(2).y);
+  TEST_ASSERT_EQUAL_INT(292, ui_layout::calibrationTarget(3).x);
+  TEST_ASSERT_EQUAL_INT(0, ui_layout::calibrationTarget(-1).x);
+  TEST_ASSERT_EQUAL_INT(0, ui_layout::calibrationTarget(4).x);
+}
+
 static void test_ui_layout_sheet_hits() {
   TEST_ASSERT_EQUAL_INT(0, ui_layout::hitSheetItem(Sheet::Tools, {86, 353}));
   TEST_ASSERT_EQUAL_INT(6, ui_layout::hitSheetItem(Sheet::Tools, {86, 461}));
@@ -381,6 +451,8 @@ int main(int, char**) {
   RUN_TEST(test_dirty_region_keeps_disjoint_rects);
   RUN_TEST(test_touch_calibration_corners);
   RUN_TEST(test_touch_calibration_center_and_clamp);
+  RUN_TEST(test_touch_calibration_plausibility);
+  RUN_TEST(test_settings_codec_round_trip);
   RUN_TEST(test_touch_state_debounce_and_tap);
   RUN_TEST(test_touch_state_move_threshold);
   RUN_TEST(test_touch_state_long_press);
@@ -390,6 +462,7 @@ int main(int, char**) {
   RUN_TEST(test_ui_layout_top_bar);
   RUN_TEST(test_ui_layout_canvas_and_sheets);
   RUN_TEST(test_ui_layout_sheet_buttons);
+  RUN_TEST(test_ui_layout_calibration);
   RUN_TEST(test_ui_layout_sheet_hits);
   return UNITY_END();
 }
