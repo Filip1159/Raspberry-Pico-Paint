@@ -132,15 +132,41 @@ void drawCircle(uint16_t* fb, int fbWidth, const Rect& clip, Point center, int r
   }
 }
 
-void drawChar(uint16_t* fb, int fbWidth, const Rect& clip, Point pos, char c, uint16_t color, uint8_t scale) {
-  if (c < font::kFirstChar || c > font::kLastChar || scale == 0) {
+void fillCircle(uint16_t* fb, int fbWidth, const Rect& clip, Point center, int radius, uint16_t color) {
+  if (radius < 0) {
     return;
   }
 
-  const uint8_t* glyph = &font::kFont5x7[(c - font::kFirstChar) * font::kGlyphWidth];
+  int x = radius;
+  int y = 0;
+  int err = 1 - x;
+
+  while (x >= y) {
+    hline(fb, fbWidth, clip, center.x - x, center.y + y, 2 * x + 1, color);
+    hline(fb, fbWidth, clip, center.x - x, center.y - y, 2 * x + 1, color);
+    hline(fb, fbWidth, clip, center.x - y, center.y + x, 2 * y + 1, color);
+    hline(fb, fbWidth, clip, center.x - y, center.y - x, 2 * y + 1, color);
+
+    ++y;
+    if (err < 0) {
+      err += 2 * y + 1;
+    } else {
+      --x;
+      err += 2 * (y - x + 1);
+    }
+  }
+}
+
+void drawChar(uint16_t* fb, int fbWidth, const Rect& clip, Point pos, char c, uint16_t color, uint8_t scale) {
+  const uint8_t code = static_cast<uint8_t>(c);
+  if (code < font::kFirstChar || code > font::kLastChar || scale == 0) {
+    return;
+  }
+
+  const uint8_t* glyph = &font::kFont5x7[(code - font::kFirstChar) * font::kGlyphWidth];
   for (int col = 0; col < font::kGlyphWidth; ++col) {
     const uint8_t bits = glyph[col];
-    for (int row = 0; row < 8; ++row) {
+    for (int row = 0; row < font::kGlyphHeight; ++row) {
       if (bits & (1u << row)) {
         fillRect(fb, fbWidth, clip,
                  {static_cast<int16_t>(pos.x + col * scale),
@@ -164,7 +190,7 @@ void drawText(uint16_t* fb, int fbWidth, const Rect& clip, Point pos, const char
   for (const char* p = text; *p; ++p) {
     if (*p == '\n') {
       x = startX;
-      y = static_cast<int16_t>(y + 8 * scale);
+      y = static_cast<int16_t>(y + font::kGlyphHeight * scale);
       continue;
     }
     drawChar(fb, fbWidth, clip, {x, y}, *p, color, scale);

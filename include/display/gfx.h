@@ -17,6 +17,7 @@ void blit(uint16_t* fb, int fbWidth, const Rect& clip, Point dst, const uint16_t
 void drawLine(uint16_t* fb, int fbWidth, const Rect& clip, Point a, Point b, uint16_t color);
 void drawRect(uint16_t* fb, int fbWidth, const Rect& clip, const Rect& rect, uint16_t color);
 void drawCircle(uint16_t* fb, int fbWidth, const Rect& clip, Point center, int radius, uint16_t color);
+void fillCircle(uint16_t* fb, int fbWidth, const Rect& clip, Point center, int radius, uint16_t color);
 void drawChar(uint16_t* fb, int fbWidth, const Rect& clip, Point pos, char c, uint16_t color, uint8_t scale);
 void drawText(uint16_t* fb, int fbWidth, const Rect& clip, Point pos, const char* text, uint16_t color, uint8_t scale);
 int textWidth(const char* text, uint8_t scale);

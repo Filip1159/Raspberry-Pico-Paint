@@ -11,6 +11,7 @@
 #include "input/touch.h"
 #include "input/touch_state.h"
 #include "paint/color.h"
+#include "ui/ui.h"
 #include "version.h"
 
 namespace {
@@ -23,9 +24,12 @@ constexpr int kFbHeight = paint::config::kScreenHeight;
 const paint::Rect kScreenRect = {0, 0, kFbWidth, kFbHeight};
 
 paint::Ili9488 gDisplay;
+#ifdef PAINT_DIAG
 paint::DirtyRegion gDirty;
+#endif
 paint::Xpt2046Touch gTouch;
 paint::TouchStateMachine gTouchState;
+paint::Ui gUi;
 uint16_t* gFramebuffer = nullptr;
 
 void printBanner() {
@@ -71,55 +75,10 @@ void printFilesystemStats() {
                 static_cast<unsigned long>(info.totalBytes - info.usedBytes));
 }
 
+#ifdef PAINT_DIAG
 void flushScreen() {
   gDirty.add(kScreenRect);
   gDisplay.flush(gDirty.take(), gFramebuffer, kFbWidth);
-}
-
-void drawDiagnostics() {
-  using namespace paint;
-
-  gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect, kScreenRect, kBlack);
-
-  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 8}, "Pico Paint", kWhite, 3);
-  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 40}, "M2 ILI9488 test", kCyan, 2);
-  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 62}, "320x480 portrait", kWhite, 2);
-
-  const uint16_t bars[8] = {kRed, kGreen, kBlue, kWhite, kBlack, kYellow, kCyan, kMagenta};
-  for (int i = 0; i < 8; ++i) {
-    gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect,
-                  {static_cast<int16_t>(i * 40), 90, 40, 60}, bars[i]);
-  }
-
-  for (int i = 0; i < 16; ++i) {
-    const uint8_t v = static_cast<uint8_t>(i * 17);
-    gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect,
-                  {static_cast<int16_t>(i * 20), 160, 20, 30}, rgb565(v, v, v));
-  }
-
-  for (int y = 0; y < 80; y += 8) {
-    for (int x = 0; x < kFbWidth; x += 8) {
-      if (((x / 8) + (y / 8)) & 1) {
-        gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect,
-                      {static_cast<int16_t>(x), static_cast<int16_t>(200 + y), 8, 8}, kWhite);
-      }
-    }
-  }
-
-  char spiText[24];
-  std::snprintf(spiText, sizeof(spiText), "SPI %lu MHz",
-                static_cast<unsigned long>(paint::config::kDisplaySpiHz / 1000000UL));
-  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 292}, spiText, kYellow, 2);
-
-  char heapText[32];
-  std::snprintf(heapText, sizeof(heapText), "heap %lu",
-                static_cast<unsigned long>(rp2040.getFreeHeap()));
-  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 314}, heapText, kWhite, 2);
-  gfx::drawText(gFramebuffer, kFbWidth, kScreenRect, {8, 336}, "touch HR2046", kWhite, 2);
-
-  gfx::drawCircle(gFramebuffer, kFbWidth, kScreenRect, {60, 410}, 30, kMagenta);
-  gfx::drawLine(gFramebuffer, kFbWidth, kScreenRect, {110, 455}, {300, 455}, kGreen);
-  gfx::drawRect(gFramebuffer, kFbWidth, kScreenRect, {4, 4, 312, 472}, kBlue);
 }
 
 void runBenchmarks() {
@@ -149,6 +108,7 @@ void runBenchmarks() {
   elapsed = micros() - start;
   Serial.printf("[bench] full-screen flush: %lu us\n", static_cast<unsigned long>(elapsed));
 }
+#endif
 
 }  // namespace
 
@@ -203,11 +163,13 @@ void setup() {
   runBenchmarks();
 #endif
 
-  drawDiagnostics();
+  gUi.begin(millis());
+  gUi.render(gFramebuffer, kFbWidth, kScreenRect);
+  const paint::Rect initialDirty = gUi.takeDirty();
   const uint32_t start = micros();
-  flushScreen();
+  gDisplay.flush(initialDirty, gFramebuffer, kFbWidth);
   const uint32_t elapsed = micros() - start;
-  Serial.printf("[disp] diagnostics flush: %lu us\n", static_cast<unsigned long>(elapsed));
+  Serial.printf("[disp] splash flush: %lu us\n", static_cast<unsigned long>(elapsed));
 
   Serial.printf("[mem] free heap: %u bytes\n",
                 static_cast<unsigned>(rp2040.getFreeHeap()));
@@ -218,7 +180,9 @@ void loop() {
   static uint32_t lastBlink = 0;
   static uint32_t lastHeartbeat = 0;
   static uint32_t lastTouchPoll = 0;
+#ifdef PAINT_DIAG
   static uint32_t lastTouchPrint = 0;
+#endif
   static bool ledOn = false;
 
   const uint32_t now = millis();
@@ -236,18 +200,17 @@ void loop() {
                   static_cast<unsigned>(rp2040.getFreeHeap()));
   }
 
+  paint::TouchFrame frame;
+
   if (now - lastTouchPoll >= paint::config::kTouchPollMs) {
     lastTouchPoll = now;
     paint::TouchRaw raw;
     paint::TouchPoint point;
     if (gTouch.read(point, raw)) {
-      const paint::TouchFrame frame = gTouchState.update(point, now);
+      frame = gTouchState.update(point, now);
 
       if (frame.down) {
         Serial.printf("[touch] down x=%d y=%d\n", frame.x, frame.y);
-      }
-      if (frame.move) {
-        Serial.printf("[touch] move x=%d y=%d\n", frame.x, frame.y);
       }
       if (frame.longPress) {
         Serial.printf("[touch] long-press x=%d y=%d\n", frame.x, frame.y);
@@ -262,6 +225,11 @@ void loop() {
         Serial.printf("[touch] tap x=%d y=%d\n", frame.x, frame.y);
       }
 
+#ifdef PAINT_DIAG
+      if (frame.move) {
+        Serial.printf("[touch] move x=%d y=%d\n", frame.x, frame.y);
+      }
+
       const uint32_t interval = frame.pressed ? 250 : 1000;
       if (now - lastTouchPrint >= interval) {
         lastTouchPrint = now;
@@ -273,20 +241,27 @@ void loop() {
                       static_cast<int>(frame.y),
                       raw.pressed ? 1 : 0);
       }
-
-      if (frame.pressed && (frame.down || frame.move)) {
-        // Temporary visual check until the M3 UI shell replaces the
-        // diagnostics screen: a red crosshair follows the calibrated touch.
-        const int16_t mx = frame.x;
-        const int16_t my = frame.y;
-        paint::gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect,
-                             {static_cast<int16_t>(mx - 4), my, 9, 1}, paint::kRed);
-        paint::gfx::fillRect(gFramebuffer, kFbWidth, kScreenRect,
-                             {mx, static_cast<int16_t>(my - 4), 1, 9}, paint::kRed);
-        gDisplay.flush({static_cast<int16_t>(mx - 4), static_cast<int16_t>(my - 4), 9, 9},
-                       gFramebuffer, kFbWidth);
-      }
+#endif
     }
+  }
+
+  gUi.update(frame, now);
+  gUi.render(gFramebuffer, kFbWidth, kScreenRect);
+
+  if (gUi.dirty()) {
+    const int count = gUi.dirtyCount();
+    for (int i = 0; i < count; ++i) {
+      const paint::Rect dirty = gUi.dirtyRect(i);
+      const uint32_t start = micros();
+      gDisplay.flush(dirty, gFramebuffer, kFbWidth);
+      const uint32_t elapsed = micros() - start;
+#ifdef PAINT_DIAG
+      Serial.printf("[ui] flush %d/%d %d,%d %dx%d: %lu us\n",
+                    i + 1, count, dirty.x, dirty.y, dirty.w, dirty.h,
+                    static_cast<unsigned long>(elapsed));
+#endif
+    }
+    gUi.clearDirty();
   }
 
   delay(1);

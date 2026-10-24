@@ -6,6 +6,8 @@
 #include "input/touch_state.h"
 #include "paint/color.h"
 #include "paint/geometry.h"
+#include "ui/font5x7.h"
+#include "ui/ui.h"
 
 using namespace paint;
 
@@ -83,6 +85,25 @@ static void test_dirty_region_merges_and_clears() {
   const Rect taken = dirty.take();
   TEST_ASSERT_TRUE(taken == makeRect(10, 20, 50, 50));
   TEST_ASSERT_TRUE(dirty.empty());
+}
+
+static void test_dirty_region_keeps_disjoint_rects() {
+  DirtyRegion dirty;
+  dirty.add(makeRect(0, 0, 10, 10));
+  dirty.add(makeRect(100, 100, 10, 10));
+
+  TEST_ASSERT_EQUAL_INT(2, dirty.count());
+  TEST_ASSERT_TRUE(dirty.rect(0) == makeRect(0, 0, 10, 10));
+  TEST_ASSERT_TRUE(dirty.rect(1) == makeRect(100, 100, 10, 10));
+  TEST_ASSERT_TRUE(dirty.bounds() == makeRect(0, 0, 110, 110));
+
+  dirty.add(makeRect(5, 5, 10, 10));
+  TEST_ASSERT_EQUAL_INT(2, dirty.count());
+  TEST_ASSERT_TRUE(dirty.bounds() == makeRect(0, 0, 110, 110));
+
+  dirty.add(makeRect(0, 0, 320, 480));
+  TEST_ASSERT_EQUAL_INT(1, dirty.count());
+  TEST_ASSERT_TRUE(dirty.rect(0) == makeRect(0, 0, 320, 480));
 }
 
 static Calibration panelCalibration() {
@@ -264,6 +285,81 @@ static void test_touch_state_release_debounce() {
   TEST_ASSERT_TRUE(f.tap);
 }
 
+static void test_font_covers_full_table() {
+  TEST_ASSERT_EQUAL_INT(0, font::kFirstChar);
+  TEST_ASSERT_EQUAL_INT(255, font::kLastChar);
+  TEST_ASSERT_EQUAL_INT(5, font::kGlyphWidth);
+  TEST_ASSERT_EQUAL_INT(8, font::kGlyphHeight);
+}
+
+static void test_ui_layout_top_bar() {
+  for (int i = 0; i < 6; ++i) {
+    TEST_ASSERT_EQUAL_INT(44, ui_layout::kButtons[i].w);
+    TEST_ASSERT_EQUAL_INT(44, ui_layout::kButtons[i].h);
+    TEST_ASSERT_EQUAL_INT(2, ui_layout::kButtons[i].y);
+    TEST_ASSERT_TRUE(ui_layout::kButtons[i].bottom() <= config::kTopBarHeight);
+    TEST_ASSERT_TRUE(ui_layout::kButtons[i].right() <= config::kScreenWidth);
+    if (i > 0) {
+      TEST_ASSERT_EQUAL_INT(4, ui_layout::kButtons[i].x - ui_layout::kButtons[i - 1].right());
+    }
+  }
+
+  TEST_ASSERT_EQUAL_INT(18, ui_layout::kButtons[0].x);
+  TEST_ASSERT_EQUAL_INT(258, ui_layout::kButtons[5].x);
+  TEST_ASSERT_EQUAL_INT(0, ui_layout::hitTopBarButton({40, 24}));
+  TEST_ASSERT_EQUAL_INT(5, ui_layout::hitTopBarButton({280, 24}));
+  TEST_ASSERT_EQUAL_INT(-1, ui_layout::hitTopBarButton({17, 24}));
+  TEST_ASSERT_EQUAL_INT(-1, ui_layout::hitTopBarButton({63, 24}));
+  TEST_ASSERT_EQUAL_INT(-1, ui_layout::hitTopBarButton({20, 46}));
+  TEST_ASSERT_TRUE(ui_layout::buttonRect(-1).empty());
+  TEST_ASSERT_TRUE(ui_layout::buttonRect(6).empty());
+}
+
+static void test_ui_layout_canvas_and_sheets() {
+  TEST_ASSERT_EQUAL_INT(0, ui_layout::kCanvas.x);
+  TEST_ASSERT_EQUAL_INT(config::kTopBarHeight, ui_layout::kCanvas.y);
+  TEST_ASSERT_EQUAL_INT(config::kScreenWidth, ui_layout::kCanvas.w);
+  TEST_ASSERT_EQUAL_INT(config::kScreenHeight - config::kTopBarHeight,
+                        ui_layout::kCanvas.h);
+  TEST_ASSERT_EQUAL_INT(config::kScreenHeight, ui_layout::kCanvas.bottom());
+
+  TEST_ASSERT_TRUE(ui_layout::sheetRect(Sheet::None).empty());
+  TEST_ASSERT_EQUAL_INT(300, ui_layout::kSheetTools.y);
+  TEST_ASSERT_EQUAL_INT(180, ui_layout::kSheetTools.h);
+  TEST_ASSERT_EQUAL_INT(260, ui_layout::kSheetPalette.y);
+  TEST_ASSERT_EQUAL_INT(220, ui_layout::kSheetPalette.h);
+  TEST_ASSERT_EQUAL_INT(360, ui_layout::kSheetSize.y);
+  TEST_ASSERT_EQUAL_INT(120, ui_layout::kSheetSize.h);
+  TEST_ASSERT_EQUAL_INT(140, ui_layout::kSheetMenu.y);
+  TEST_ASSERT_EQUAL_INT(340, ui_layout::kSheetMenu.h);
+  TEST_ASSERT_EQUAL_INT(config::kScreenHeight, ui_layout::kSheetTools.bottom());
+  TEST_ASSERT_EQUAL_INT(config::kScreenHeight, ui_layout::kSheetPalette.bottom());
+  TEST_ASSERT_EQUAL_INT(config::kScreenHeight, ui_layout::kSheetSize.bottom());
+  TEST_ASSERT_EQUAL_INT(config::kScreenHeight, ui_layout::kSheetMenu.bottom());
+  TEST_ASSERT_EQUAL_INT(16, config::kScreenHeight - ui_layout::kToast.bottom());
+
+  TEST_ASSERT_TRUE(ui_layout::hitBackButton({40, 24}));
+  TEST_ASSERT_FALSE(ui_layout::hitBackButton({70, 24}));
+}
+
+static void test_ui_layout_sheet_hits() {
+  TEST_ASSERT_EQUAL_INT(0, ui_layout::hitSheetItem(Sheet::Tools, {86, 353}));
+  TEST_ASSERT_EQUAL_INT(6, ui_layout::hitSheetItem(Sheet::Tools, {86, 461}));
+  TEST_ASSERT_EQUAL_INT(-1, ui_layout::hitSheetItem(Sheet::Tools, {86, 480}));
+
+  TEST_ASSERT_EQUAL_INT(0, ui_layout::hitSheetItem(Sheet::Palette, {50, 318}));
+  TEST_ASSERT_EQUAL_INT(23, ui_layout::hitSheetItem(Sheet::Palette, {270, 450}));
+  TEST_ASSERT_TRUE(ui_layout::hitPaletteHsv({274, 280}));
+  TEST_ASSERT_EQUAL_INT(-1, ui_layout::hitSheetItem(Sheet::Palette, {274, 280}));
+
+  TEST_ASSERT_EQUAL_INT(0, ui_layout::hitSheetItem(Sheet::Size, {40, 428}));
+  TEST_ASSERT_EQUAL_INT(6, ui_layout::hitSheetItem(Sheet::Size, {280, 428}));
+
+  TEST_ASSERT_EQUAL_INT(0, ui_layout::hitSheetItem(Sheet::Menu, {160, 198}));
+  TEST_ASSERT_EQUAL_INT(5, ui_layout::hitSheetItem(Sheet::Menu, {160, 418}));
+  TEST_ASSERT_EQUAL_INT(-1, ui_layout::hitSheetItem(Sheet::Menu, {160, 440}));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_rgb565_primaries);
@@ -274,6 +370,7 @@ int main(int, char**) {
   RUN_TEST(test_geometry_intersect);
   RUN_TEST(test_canvas_dimensions);
   RUN_TEST(test_dirty_region_merges_and_clears);
+  RUN_TEST(test_dirty_region_keeps_disjoint_rects);
   RUN_TEST(test_touch_calibration_corners);
   RUN_TEST(test_touch_calibration_center_and_clamp);
   RUN_TEST(test_touch_state_debounce_and_tap);
@@ -281,5 +378,9 @@ int main(int, char**) {
   RUN_TEST(test_touch_state_long_press);
   RUN_TEST(test_touch_state_drag_cancels_long_press);
   RUN_TEST(test_touch_state_release_debounce);
+  RUN_TEST(test_font_covers_full_table);
+  RUN_TEST(test_ui_layout_top_bar);
+  RUN_TEST(test_ui_layout_canvas_and_sheets);
+  RUN_TEST(test_ui_layout_sheet_hits);
   return UNITY_END();
 }

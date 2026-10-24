@@ -1,7 +1,7 @@
 # Pico Paint — Backlog & Implementation Plan
 
 **Target hardware:** Raspberry Pi Pico 2 W (RP2350, 4 MB flash, 520 KB SRAM) + 4" 480×320 ILI9488 SPI TFT (used in **portrait 320×480**) with **HR2046 / XPT2046-compatible** resistive touch
-**Status:** M1 and M2 hardware-verified; M3 touch state machine implemented, UI shell next
+**Status:** M0–M3 touch path hardware-verified; M3 UI shell implemented and host-previewed, on-device verification next
 **Last updated:** 2026-10-24
 
 ---
@@ -36,19 +36,21 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 
 - PlatformIO project retargeted to **Pico 2 W** (`board = rpipico2w`) via the RP2350-capable maxgerhardt platform fork, pinned to a commit.
 - M1 skeleton is in place and **hardware-verified on 2026-10-24**: serial banner, LittleFS `total=2097152 used=8192 free=2088960`, free heap 452,472 B. The onboard backlight driver is confirmed: `LED` tied to 3V3 through 10k lights the panel.
-- M2 implementation is in place: ILI9488 init/rotation/address-window driver, RGB565→RGB666 line-buffer flush, `gfx` primitives (rect, hline/vline, line, circle, text, blit), 5×7 font, dirty-region helper, diagnostics screen and benchmarks.
+- M2 implementation is in place: ILI9488 init/rotation/address-window driver, RGB565→RGB666 line-buffer flush, `gfx` primitives (rect, hline/vline, line, circle, fillCircle, text, blit), 5×7 font, dirty-region helper, benchmarks and the original diagnostics screen (now retired from the normal boot).
 - Builds verified on 2026-10-24:
-  - `pico2w_usb`: **SUCCESS** — RAM 72,548 B (13.8%), flash 336,392 B (16.1%)
-  - `pico2w_ota`: **SUCCESS** — RAM 72,548 B, flash 336,392 B
-  - `pico2w_diag`: **SUCCESS** — RAM 72,548 B, flash 336,792 B (16.1%)
-- Native tests pass under WSL g++ (15/15, including the dirty-region, touch-calibration and touch-state tests). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
+  - `pico2w_usb`: **SUCCESS** — RAM 72,656 B (13.9%), flash 343,200 B (16.4%)
+  - `pico2w_ota`: **SUCCESS** — RAM 72,656 B, flash 343,200 B
+  - `pico2w_diag`: **SUCCESS** — RAM 72,728 B (13.9%), flash 343,704 B (16.4%)
+- Native tests pass under WSL g++ (20/20, including the disjoint-rect dirty-region, touch-calibration, touch-state, font-range and UI-layout tests). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
 - M2 is hardware-verified: correct colours, upright portrait at rotation 2, no offset/clipping, stable 40 MHz SPI, 139.3 ms full-screen flush, 143,360 B free heap after the framebuffer.
-- M3-1 is hardware-validated: the HR2046 responds on SPI1 at all four corners. Raw ranges are roughly X 260–3880 and Y 298–3807. `pico2w_usb` prints raw and calibrated `[touch]` samples and draws a red crosshair at the mapped point.
+- M3-1 is hardware-validated: the HR2046 responds on SPI1 at all four corners. Raw ranges are roughly X 260–3880 and Y 298–3807. The normal build prints `down`, `up`, `tap` and `long-press`; `pico2w_diag` additionally prints `move`, raw samples and UI flush timings.
 - M3-2 calibration is implemented as a full Q16.16 affine least-squares fit from four corner samples. The panel's raw axes are rotated 90° relative to the display (raw X top→bottom, raw Y left→right), so the transform includes cross terms; all four corners map within ~1 px. Persistence in `/config.bin` and the guided calibration screen (M3-8) remain.
 - M3-3 touch state machine is implemented: two-sample press/release debounce, 2 px move threshold, tap detection (≤10 px travel), one-shot 600 ms long-press, and a frame structure for the UI. The diagnostics build prints `down`, `move`, `up`, `tap` and `long-press` events.
-- Git repository initialized (`main`); M1, M2 and the M3 touch driver are committed.
+- M3-4/M3-5/M3-6 UI shell is implemented: `Ui` layout and hit testing, 48 px top bar with six 44×44 buttons, blank paper canvas, vector icons, tools/palette/size/menu bottom sheets, toast, and Gallery/Settings/About/Recovery placeholders. The 5×7 font now indexes the full 256-glyph table from ASCII 0, which fixed the garbled host-preview text.
+- The UI has been rendered on the host at 320×480 for splash, canvas, every sheet, placeholders and toast. All text and layouts look structurally correct; on-device colour, touch targeting and flush timing still need verification.
+- Git repository initialized (`main`); M1, M2 and the M3 touch driver are committed. The UI shell is ready for on-device verification.
 
-**Next action:** flash `pico2w_usb`, confirm the `[touch] down/move/up/tap/long-press` event lines and the crosshair, then implement the immediate-mode UI core (M3-4) and the canvas shell (M3-6).
+**Next action:** flash `pico2w_usb`, verify splash → canvas, top-bar taps, sheet open/close/switch, toast expiry and Gallery/Settings/About back navigation on the panel. Then measure `[ui] flush` timings in `pico2w_diag`, finish touch-calibration persistence (M3-2/M3-8/M3-9), and move to the M4 canvas buffer/drawing engine.
 
 ---
 
@@ -168,7 +170,8 @@ Rule: `Paint`, `Storage` codecs, and geometry helpers must be **Arduino-free** s
 | `include/storage/storage.h` | LittleFS mount, files, free space, atomic writes |
 | `include/storage/config.h` | Calibration, rotation, brightness, flags |
 | `include/ui/ui.h` | Screens, widgets, hit testing, toasts, modals |
-| `include/ui/icons.h`, `ui/font5x7.h` | Flash-resident bitmaps |
+| `include/ui/font5x7.h` | 5×7 font table and glyph range |
+| `include/ui/icons.h` | Reserved 1-bit icon structure for the M8 icon set |
 | `include/input/touch.h` | `ITouch` interface + `Xpt2046Touch` (works with HR2046) |
 | `include/input/calibration.h` | 4-point affine calibration |
 | `include/display/ili9488.h` | SPI init, window, RGB666 expansion, flush |
@@ -209,7 +212,7 @@ loop():
 ```
 
 - **Framebuffer first.** All drawing and UI composition happens in RAM; the panel is write-only.
-- **Dirty rectangles.** A stroke marks only its bounding box; a button marks its own rect. Full-screen flushes happen only on screen transitions.
+- **Dirty rectangles.** A stroke marks only its bounding box; a button marks its own rect. Disjoint rectangles are kept separate (up to eight) and flushed independently, so a top-bar button and a bottom sheet do not force a full-height bounding box. Full-screen flushes happen only on screen transitions.
 - **Banded transfer.** Split large dirty areas into ≤32-row bands so the watchdog is fed and the UI can respond between bands.
 - **RGB666 expansion.** For each row: convert RGB565 → 3 bytes `[R6<<2, G6<<2, B6<<2]`, then one SPI write. Start blocking; add DMA only if profiling demands it.
 - **Shape previews use XOR.** Draw the preview by XOR-ing pixels in the framebuffer, erase by XOR-ing the same pixels again. No background copy needed for screen-spanning shapes.
@@ -273,9 +276,9 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 - [x] M0-2 Confirm the interface: 14-pin 4-wire SPI, 480×320 — confirmed from silkscreen `4.0" TFT SPI 480*320 V1.0`.
 - [x] M0-3 Verify `LED` is a control input, measure total backlight current, and decide direct PWM vs MOSFET wiring. *Control input confirmed: 10k from `LED` to 3V3 lights the panel; onboard Q1 driver; GP21 PWM with no external MOSFET. Total current measurement deferred (not needed for the control decision).*
 - [x] M0-4 Verify the Pico 2 W board: flash size, USB serial, `LED_BUILTIN` blink. *USB CDC serial and 4 MB flash confirmed; `LED_BUILTIN` heartbeat is in the M1/M2 firmware.*
-- [ ] M0-5 Wire display + touch per §4.2 on a breadboard; keep leads short. *Display and backlight wired; touch wiring is the current step.*
-- [ ] M0-6 Flash a minimal diagnostic sketch: backlight on/off, read raw touch values, print them over serial. *Display diagnostics done; the M3 build prints raw `[touch]` samples.*
-- [x] M0-7 Record the confirmed wiring and any deviations in `docs/wiring.md`. *Display/backlight confirmed; touch section is ready for M3.*
+- [x] M0-5 Wire display + touch per §4.2 on a breadboard; keep leads short. *Display, backlight and touch wired; all four touch corners respond.*
+- [x] M0-6 Flash a minimal diagnostic sketch: backlight on/off, read raw touch values, print them over serial. *Display diagnostics done; the M3 build prints calibrated touch events, and `pico2w_diag` prints raw samples.*
+- [x] M0-7 Record the confirmed wiring and any deviations in `docs/wiring.md`. *Display, backlight and touch sections confirmed.*
 
 **Acceptance:** documented module variant and pin map; backlight controllable; raw touch values change with finger position; nothing gets hot.
 
@@ -315,8 +318,8 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 - [x] M2-2 Implement rotation via MADCTL (test all four values); default **portrait 320×480**. *Implemented: `0x48`, `0x28`, `0x88`, `0xE8`. The module is mounted 180° from the native portrait view, so the default is `config::kDisplayRotation = 2` (`0x88`); all four values still need a visual check.*
 - [x] M2-3 Implement `setAddrWindow(x, y, w, h)` and `pushPixelsRGB565()` with RGB565→RGB666 conversion in a line buffer. *Implemented as `setAddrWindow` + `flush` with a 480×3-byte line buffer.*
 - [x] M2-4 Implement `gfx`: fillRect, hline/vline, Bresenham line, circle, clipped blit, 5×7 bitmap text (integer scaling). *Implemented; font is the classic Adafruit 5×7 table (BSD).*
-- [x] M2-5 Implement dirty-rect merging and banded flush with watchdog feeding. *`DirtyRegion` bounding-box merge + row-banded flush with `rp2040.wdt_reset()` every 16 rows. Canvas/UI integration lands in M4.*
-- [x] M2-6 Build the diagnostics screen: colour bars, grey ramp, checkerboard, orientation test, text sample. *Implemented in `src/main.cpp`; orientation test is the portrait title/geometry plus the rotation API.*
+- [x] M2-5 Implement dirty-rect merging and banded flush with watchdog feeding. *`DirtyRegion` now keeps up to eight disjoint rectangles (merging overlaps), and each is flushed independently with `rp2040.wdt_reset()` every 16 rows. The UI uses this in M3; canvas integration lands in M4.*
+- [x] M2-6 Build the diagnostics screen: colour bars, grey ramp, checkerboard, orientation test, text sample. *Served its purpose during M2 and was retired when the UI shell replaced it. `pico2w_diag` still runs the benchmark paths before the UI; the colour-bar screen is recoverable from git history.*
 - [x] M2-7 Benchmark: full screen, 64×64 rect, 432 px line; log ms per operation. *Implemented in `pico2w_diag`; on-device numbers pending.*
 - [ ] M2-8 Measure free heap with and without a Wi-Fi prototype; record the memory decision (§5.3). Re-check the gate in M7. *Without Wi-Fi: 143,360 B free after the 307,200 B framebuffer; Wi-Fi measurement waits for M7.*
 - [x] M2-9 Tune SPI clock: 27 → 40 → optionally 62.5 MHz; keep the fastest stable value. *40 MHz verified stable on 2026-10-24. Full-screen framebuffer flush: 139.3 ms after conversion-loop optimization (27 MHz baseline: 200.8 ms). 62.5 MHz not attempted; 40 MHz meets the target with margin.*
@@ -334,14 +337,16 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 - [x] M3-1 Implement `ITouch`; `Xpt2046Touch` on SPI1 at ~2 MHz (mode 0), median-of-3 + EMA filtering. *Implemented with pipelined Z1/Z2/X/Y reads, pressure threshold and EMA. Hardware-validated on 2026-10-24 at all four corners.*
 - [ ] M3-2 Implement 4-point calibration; solve and store a 6-coefficient affine transform (Q16.16) in `/config.bin`. *Full Q16.16 affine least-squares fit from four corners is implemented and maps all corners within ~1 px. Persistence and guided capture remain.*
 - [x] M3-3 Implement the touch state machine: down / move / up, movement threshold, long-press, tap. *Implemented with debounce, 2 px move threshold, tap detection, one-shot long-press and native tests.*
-- [ ] M3-4 Build the immediate-mode UI core: layout, buttons, toggles, sliders, modal sheet, toast, hit testing.
-- [ ] M3-5 Add icons and the 5×7 font assets; establish a consistent 44×44 px minimum touch target.
-- [ ] M3-6 Implement screens: splash, canvas shell (top bar + blank canvas), menu sheet, placeholder gallery/settings.
-- [ ] M3-7 Add the cooperative main loop with a frame budget and a watchdog.
+- [x] M3-4 Build the immediate-mode UI core: layout, buttons, modal sheets, toast, hit testing. *Toggles and sliders are not used by the M3 screens; they will land with the M8 settings screen.*
+- [x] M3-5 Add icons and the 5×7 font assets; establish a consistent 44×44 px minimum touch target. *Compact vector icons are drawn in `src/ui/ui.cpp`; the 1-bit `icons.h` structure is reserved for the M8 polished set. All top-bar targets are 44×44 px.*
+- [x] M3-6 Implement screens: splash, canvas shell (top bar + blank canvas), menu sheet, placeholder gallery/settings. *Also includes tools, palette and brush-size sheets plus About and Recovery placeholders.*
+- [x] M3-7 Add the cooperative main loop with a frame budget and a watchdog. *10 ms touch poll, immediate UI update, partial dirty flush, 1 ms idle delay; the banded display flush feeds the watchdog every 16 rows. Explicit frame-budget instrumentation is deferred to M4 profiling.*
 - [ ] M3-8 Add a touch-calibration screen with crosshairs and a "save" step.
 - [ ] M3-9 Verify calibration survives reboot and works in all four rotations (or lock to one).
 
 **Acceptance:** touch accuracy ±2 px at screen centre; no stuck/double taps; calibration persists; UI interaction <50 ms; splash → canvas <2.5 s.
+
+**Status (2026-10-24):** touch accuracy and gesture handling verified on hardware; UI shell implemented and host-previewed. Calibration persistence and on-device UI latency still need verification.
 
 ---
 

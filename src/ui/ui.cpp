@@ -1,0 +1,702 @@
+#include "ui/ui.h"
+
+#include <cstdio>
+
+#include "display/gfx.h"
+#include "paint/color.h"
+#include "version.h"
+
+namespace paint {
+namespace ui_layout {
+
+const uint16_t kPalette[kPaletteCount] = {
+    rgb565(0, 0, 0),       rgb565(64, 64, 64),    rgb565(128, 128, 128),
+    rgb565(192, 192, 192), rgb565(255, 255, 255), rgb565(128, 64, 0),
+    rgb565(255, 0, 0),     rgb565(255, 128, 0),   rgb565(255, 255, 0),
+    rgb565(128, 255, 0),   rgb565(0, 255, 0),     rgb565(0, 255, 128),
+    rgb565(0, 255, 255),   rgb565(0, 128, 255),   rgb565(0, 0, 255),
+    rgb565(128, 0, 255),   rgb565(255, 0, 255),   rgb565(255, 0, 128),
+    rgb565(128, 0, 0),     rgb565(0, 128, 128),   rgb565(0, 128, 0),
+    rgb565(0, 64, 128),    rgb565(64, 0, 128),    rgb565(128, 0, 64),
+};
+
+const uint8_t kBrushSizes[kBrushSizeCount] = {1, 2, 4, 8, 16, 24, 32};
+
+}  // namespace ui_layout
+
+namespace {
+
+constexpr uint16_t kChrome = rgb565(28, 28, 34);
+constexpr uint16_t kChromeLine = rgb565(64, 64, 72);
+constexpr uint16_t kButton = rgb565(48, 48, 58);
+constexpr uint16_t kButtonPressed = rgb565(78, 78, 92);
+constexpr uint16_t kButtonActive = rgb565(0, 78, 104);
+constexpr uint16_t kButtonBorder = rgb565(80, 80, 90);
+constexpr uint16_t kAccent = rgb565(0, 170, 220);
+constexpr uint16_t kSheet = rgb565(38, 38, 46);
+constexpr uint16_t kSheetItem = rgb565(54, 54, 64);
+constexpr uint16_t kSheetItemActive = rgb565(0, 96, 128);
+constexpr uint16_t kText = kWhite;
+constexpr uint16_t kTextDim = rgb565(160, 160, 170);
+constexpr uint16_t kDisabled = rgb565(105, 105, 115);
+constexpr uint16_t kToastBg = rgb565(20, 20, 26);
+constexpr uint16_t kSplashBg = rgb565(12, 12, 18);
+
+const char* const kToolNames[7] = {"Brush", "Eraser", "Line", "Rect", "Ellipse", "Fill", "Picker"};
+const char* const kMenuNames[6] = {"New canvas", "Save", "Gallery", "Settings", "Wi-Fi & OTA", "About"};
+
+void drawTextCentered(uint16_t* fb, int fbWidth, const Rect& clip, const Rect& area,
+                      const char* text, uint16_t color, uint8_t scale) {
+  if (!text) {
+    return;
+  }
+  const int textW = gfx::textWidth(text, scale);
+  const int textH = 8 * scale;
+  const int x = area.x + (area.w - textW) / 2;
+  const int y = area.y + (area.h - textH) / 2;
+  gfx::drawText(fb, fbWidth, clip, {static_cast<int16_t>(x), static_cast<int16_t>(y)},
+                text, color, scale);
+}
+
+void drawTextLeftCentered(uint16_t* fb, int fbWidth, const Rect& clip, const Rect& area,
+                          const char* text, uint16_t color, uint8_t scale, int inset) {
+  if (!text) {
+    return;
+  }
+  const int textH = 8 * scale;
+  const int x = area.x + inset;
+  const int y = area.y + (area.h - textH) / 2;
+  gfx::drawText(fb, fbWidth, clip, {static_cast<int16_t>(x), static_cast<int16_t>(y)},
+                text, color, scale);
+}
+
+void drawButtonFrame(uint16_t* fb, int fbWidth, const Rect& clip, const Rect& r,
+                     bool pressed, bool active, bool disabled) {
+  const uint16_t fill = pressed ? kButtonPressed : (active ? kButtonActive : kButton);
+  const uint16_t border = active ? kAccent : (disabled ? kDisabled : kButtonBorder);
+  gfx::fillRect(fb, fbWidth, clip, r, fill);
+  gfx::drawRect(fb, fbWidth, clip, r, border);
+}
+
+void drawArrowIcon(uint16_t* fb, int fbWidth, const Rect& clip, const Rect& r,
+                   bool right, uint16_t color) {
+  const int cx = r.x + r.w / 2;
+  const int cy = r.y + r.h / 2;
+  const int dir = right ? 1 : -1;
+  const int headX = cx + dir * 8;
+  const int tailX = cx - dir * 8;
+
+  gfx::drawLine(fb, fbWidth, clip, {static_cast<int16_t>(tailX), static_cast<int16_t>(cy - 6)},
+                {static_cast<int16_t>(headX), static_cast<int16_t>(cy - 6)}, color);
+  gfx::drawLine(fb, fbWidth, clip, {static_cast<int16_t>(headX), static_cast<int16_t>(cy - 6)},
+                {static_cast<int16_t>(headX - dir * 6), static_cast<int16_t>(cy - 12)}, color);
+  gfx::drawLine(fb, fbWidth, clip, {static_cast<int16_t>(headX), static_cast<int16_t>(cy - 6)},
+                {static_cast<int16_t>(headX - dir * 6), static_cast<int16_t>(cy)}, color);
+  gfx::drawLine(fb, fbWidth, clip, {static_cast<int16_t>(tailX), static_cast<int16_t>(cy - 6)},
+                {static_cast<int16_t>(tailX), static_cast<int16_t>(cy + 4)}, color);
+}
+
+void drawMenuIcon(uint16_t* fb, int fbWidth, const Rect& clip, const Rect& r, uint16_t color) {
+  const int cx = r.x + r.w / 2;
+  const int cy = r.y + r.h / 2;
+  for (int i = -1; i <= 1; ++i) {
+    gfx::fillRect(fb, fbWidth, clip,
+                  {static_cast<int16_t>(cx - 8), static_cast<int16_t>(cy + i * 6 - 1), 16, 2},
+                  color);
+  }
+}
+
+void drawSizeIcon(uint16_t* fb, int fbWidth, const Rect& clip, const Rect& r,
+                  uint8_t size, uint16_t color) {
+  const int cx = r.x + r.w / 2;
+  const int cy = r.y + r.h / 2;
+  gfx::drawCircle(fb, fbWidth, clip, {static_cast<int16_t>(cx), static_cast<int16_t>(cy)}, 10, color);
+  const int inner = 2 + size / 8;
+  gfx::fillCircle(fb, fbWidth, clip, {static_cast<int16_t>(cx), static_cast<int16_t>(cy)}, inner, color);
+}
+
+void drawColorIcon(uint16_t* fb, int fbWidth, const Rect& clip, const Rect& r, uint16_t color) {
+  const int cx = r.x + r.w / 2;
+  const int cy = r.y + r.h / 2;
+  gfx::fillCircle(fb, fbWidth, clip, {static_cast<int16_t>(cx), static_cast<int16_t>(cy)}, 9, color);
+  gfx::drawCircle(fb, fbWidth, clip, {static_cast<int16_t>(cx), static_cast<int16_t>(cy)}, 10, kWhite);
+}
+
+void drawToolIcon(uint16_t* fb, int fbWidth, const Rect& clip, const Rect& r,
+                  Tool tool, uint16_t color) {
+  const int cx = r.x + r.w / 2;
+  const int cy = r.y + r.h / 2;
+
+  switch (tool) {
+    case Tool::Brush:
+      for (int offset = -1; offset <= 1; ++offset) {
+        gfx::drawLine(fb, fbWidth, clip,
+                      {static_cast<int16_t>(cx - 8), static_cast<int16_t>(cy + 8 + offset)},
+                      {static_cast<int16_t>(cx + 8), static_cast<int16_t>(cy - 8 + offset)}, color);
+      }
+      gfx::drawLine(fb, fbWidth, clip, {static_cast<int16_t>(cx + 8), static_cast<int16_t>(cy - 8)},
+                    {static_cast<int16_t>(cx + 12), static_cast<int16_t>(cy - 4)}, color);
+      gfx::drawLine(fb, fbWidth, clip, {static_cast<int16_t>(cx + 8), static_cast<int16_t>(cy - 8)},
+                    {static_cast<int16_t>(cx + 4), static_cast<int16_t>(cy - 12)}, color);
+      gfx::fillRect(fb, fbWidth, clip,
+                    {static_cast<int16_t>(cx - 10), static_cast<int16_t>(cy + 10), 3, 3}, color);
+      break;
+    case Tool::Eraser:
+      gfx::drawRect(fb, fbWidth, clip,
+                    {static_cast<int16_t>(cx - 9), static_cast<int16_t>(cy - 6), 18, 12}, color);
+      gfx::drawLine(fb, fbWidth, clip, {static_cast<int16_t>(cx - 9), static_cast<int16_t>(cy + 6)},
+                    {static_cast<int16_t>(cx + 9), static_cast<int16_t>(cy - 6)}, color);
+      break;
+    case Tool::Line:
+      gfx::drawLine(fb, fbWidth, clip, {static_cast<int16_t>(cx - 9), static_cast<int16_t>(cy + 9)},
+                    {static_cast<int16_t>(cx + 9), static_cast<int16_t>(cy - 9)}, color);
+      break;
+    case Tool::Rect:
+      gfx::drawRect(fb, fbWidth, clip,
+                    {static_cast<int16_t>(cx - 9), static_cast<int16_t>(cy - 7), 18, 14}, color);
+      break;
+    case Tool::Ellipse:
+      gfx::drawCircle(fb, fbWidth, clip, {static_cast<int16_t>(cx), static_cast<int16_t>(cy)}, 9, color);
+      break;
+    case Tool::Fill:
+      gfx::fillRect(fb, fbWidth, clip,
+                    {static_cast<int16_t>(cx - 8), static_cast<int16_t>(cy + 2), 12, 6}, color);
+      gfx::drawLine(fb, fbWidth, clip, {static_cast<int16_t>(cx - 4), static_cast<int16_t>(cy + 2)},
+                    {static_cast<int16_t>(cx + 6), static_cast<int16_t>(cy - 8)}, color);
+      gfx::fillCircle(fb, fbWidth, clip,
+                      {static_cast<int16_t>(cx + 9), static_cast<int16_t>(cy + 9)}, 2, color);
+      break;
+    case Tool::Picker:
+      gfx::drawLine(fb, fbWidth, clip, {static_cast<int16_t>(cx - 8), static_cast<int16_t>(cy + 8)},
+                    {static_cast<int16_t>(cx + 6), static_cast<int16_t>(cy - 6)}, color);
+      gfx::drawCircle(fb, fbWidth, clip,
+                      {static_cast<int16_t>(cx + 8), static_cast<int16_t>(cy - 8)}, 3, color);
+      gfx::fillCircle(fb, fbWidth, clip,
+                      {static_cast<int16_t>(cx + 8), static_cast<int16_t>(cy - 8)}, 1, color);
+      break;
+  }
+}
+
+}  // namespace
+
+void Ui::begin(uint32_t nowMs) {
+  screen_ = Screen::Splash;
+  sheet_ = Sheet::None;
+  tool_ = Tool::Brush;
+  brushSize_ = config::kDefaultBrushSize;
+  color_ = 0x0000;
+  pressedButton_ = -1;
+  pressedBack_ = false;
+  toastActive_ = false;
+  toastUntil_ = 0;
+  splashUntil_ = nowMs + 800;
+  toast_[0] = '\0';
+  dirty_.reset();
+  dirty_.add(ui_layout::kScreen);
+}
+
+void Ui::setScreen(Screen next) {
+  if (next == screen_) {
+    return;
+  }
+  screen_ = next;
+  sheet_ = Sheet::None;
+  pressedButton_ = -1;
+  pressedBack_ = false;
+  // Do not carry a toast from the canvas over a placeholder screen.
+  toastActive_ = false;
+  dirty_.add(ui_layout::kScreen);
+}
+
+void Ui::setSheet(Sheet next) {
+  if (next == sheet_) {
+    return;
+  }
+  if (toastActive_) {
+    toastActive_ = false;
+    dirty_.add(ui_layout::kToast);
+  }
+  // The active sheet is reflected in the top bar, so repaint the bar even when
+  // the sheet is closed by tapping outside it.
+  dirty_.add(ui_layout::kTopBar);
+  const Rect oldRect = ui_layout::sheetRect(sheet_);
+  const Rect newRect = ui_layout::sheetRect(next);
+  sheet_ = next;
+  if (!oldRect.empty()) {
+    dirty_.add(oldRect);
+  }
+  if (!newRect.empty()) {
+    dirty_.add(newRect);
+  }
+}
+
+void Ui::showToast(const char* text, uint32_t nowMs) {
+  std::snprintf(toast_, sizeof(toast_), "%s", text ? text : "");
+  toastActive_ = true;
+  toastUntil_ = nowMs + 2000;
+  dirty_.add(ui_layout::kToast);
+}
+
+void Ui::activateTopBar(int index, uint32_t nowMs) {
+  switch (index) {
+    case 0:
+      setSheet(sheet_ == Sheet::Tools ? Sheet::None : Sheet::Tools);
+      break;
+    case 1:
+      setSheet(sheet_ == Sheet::Size ? Sheet::None : Sheet::Size);
+      break;
+    case 2:
+      setSheet(sheet_ == Sheet::Palette ? Sheet::None : Sheet::Palette);
+      break;
+    case 3:
+      setSheet(Sheet::None);
+      showToast("Undo lands in M4", nowMs);
+      break;
+    case 4:
+      setSheet(Sheet::None);
+      showToast("Redo lands in M4", nowMs);
+      break;
+    case 5:
+      setSheet(sheet_ == Sheet::Menu ? Sheet::None : Sheet::Menu);
+      break;
+    default:
+      break;
+  }
+}
+
+void Ui::handleCanvasTap(Point p, uint32_t nowMs) {
+  if (sheet_ == Sheet::None) {
+    return;
+  }
+
+  if (ui_layout::sheetRect(sheet_).contains(p)) {
+    activateSheetItem(p, nowMs);
+  } else {
+    setSheet(Sheet::None);
+  }
+}
+
+void Ui::activateSheetItem(Point p, uint32_t nowMs) {
+  const int item = ui_layout::hitSheetItem(sheet_, p);
+
+  switch (sheet_) {
+    case Sheet::Tools:
+      if (item >= 0 && item < 7) {
+        tool_ = static_cast<Tool>(item);
+        dirty_.add(ui_layout::kButtons[0]);
+        setSheet(Sheet::None);
+        showToast(kToolNames[item], nowMs);
+      }
+      break;
+    case Sheet::Palette:
+      if (ui_layout::hitPaletteHsv(p)) {
+        setSheet(Sheet::None);
+        showToast("HSV picker lands in M4", nowMs);
+      } else if (item >= 0 && item < ui_layout::kPaletteCount) {
+        color_ = ui_layout::kPalette[item];
+        dirty_.add(ui_layout::kButtons[2]);
+        setSheet(Sheet::None);
+        showToast("Colour selected", nowMs);
+      }
+      break;
+    case Sheet::Size:
+      if (item >= 0 && item < ui_layout::kBrushSizeCount) {
+        brushSize_ = ui_layout::kBrushSizes[item];
+        dirty_.add(ui_layout::kButtons[1]);
+        setSheet(Sheet::None);
+        char buffer[24];
+        std::snprintf(buffer, sizeof(buffer), "Brush %u px", static_cast<unsigned>(brushSize_));
+        showToast(buffer, nowMs);
+      }
+      break;
+    case Sheet::Menu:
+      if (item >= 0 && item < 6) {
+        setSheet(Sheet::None);
+        switch (item) {
+          case 0:
+            showToast("New canvas lands in M4", nowMs);
+            break;
+          case 1:
+            showToast("Save lands in M6", nowMs);
+            break;
+          case 2:
+            setScreen(Screen::Gallery);
+            break;
+          case 3:
+            setScreen(Screen::Settings);
+            break;
+          case 4:
+            showToast("Wi-Fi & OTA lands in M7", nowMs);
+            break;
+          case 5:
+            setScreen(Screen::About);
+            break;
+          default:
+            break;
+        }
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+void Ui::updatePlaceholder(const TouchFrame& frame) {
+  if (frame.down) {
+    if (ui_layout::hitBackButton({frame.x, frame.y})) {
+      pressedBack_ = true;
+      dirty_.add(ui_layout::kBackButton);
+    } else {
+      pressedBack_ = false;
+    }
+  }
+
+  if (frame.move && pressedBack_ && !ui_layout::hitBackButton({frame.x, frame.y})) {
+    pressedBack_ = false;
+    dirty_.add(ui_layout::kBackButton);
+  }
+
+  if (frame.up) {
+    const bool wasPressed = pressedBack_;
+    pressedBack_ = false;
+    if (wasPressed) {
+      dirty_.add(ui_layout::kBackButton);
+      if (ui_layout::hitBackButton({frame.x, frame.y})) {
+        setScreen(Screen::Canvas);
+      }
+    }
+  }
+}
+
+void Ui::update(const TouchFrame& frame, uint32_t nowMs) {
+  if (screen_ == Screen::Splash) {
+    if (frame.down || static_cast<int32_t>(nowMs - splashUntil_) >= 0) {
+      screen_ = Screen::Canvas;
+      sheet_ = Sheet::None;
+      pressedButton_ = -1;
+      pressedBack_ = false;
+      dirty_.add(ui_layout::kScreen);
+    }
+    return;
+  }
+
+  if (toastActive_ && static_cast<int32_t>(nowMs - toastUntil_) >= 0) {
+    toastActive_ = false;
+    dirty_.add(ui_layout::kToast);
+  }
+
+  if (screen_ != Screen::Canvas) {
+    updatePlaceholder(frame);
+    return;
+  }
+
+  if (frame.down) {
+    const int button = ui_layout::hitTopBarButton({frame.x, frame.y});
+    if (button >= 0) {
+      pressedButton_ = static_cast<int8_t>(button);
+      dirty_.add(ui_layout::kButtons[button]);
+    } else {
+      pressedButton_ = -1;
+    }
+  }
+
+  if (frame.move && pressedButton_ >= 0) {
+    const int button = ui_layout::hitTopBarButton({frame.x, frame.y});
+    if (button != pressedButton_) {
+      dirty_.add(ui_layout::kButtons[pressedButton_]);
+      pressedButton_ = -1;
+    }
+  }
+
+  if (frame.up) {
+    if (pressedButton_ >= 0) {
+      const int oldButton = pressedButton_;
+      pressedButton_ = -1;
+      dirty_.add(ui_layout::kButtons[oldButton]);
+      const int button = ui_layout::hitTopBarButton({frame.x, frame.y});
+      if (button == oldButton) {
+        activateTopBar(oldButton, nowMs);
+      }
+      return;
+    }
+
+    if (frame.tap) {
+      handleCanvasTap({frame.x, frame.y}, nowMs);
+    }
+  }
+}
+
+void Ui::render(uint16_t* fb, int fbWidth, const Rect& clip) {
+  if (!fb || dirty_.empty()) {
+    return;
+  }
+
+  switch (screen_) {
+    case Screen::Splash:
+      drawSplash(fb, fbWidth, clip);
+      break;
+    case Screen::Canvas:
+      drawCanvasScreen(fb, fbWidth, clip);
+      break;
+    case Screen::Gallery:
+    case Screen::Settings:
+    case Screen::About:
+    case Screen::Recovery:
+      drawPlaceholder(fb, fbWidth, clip);
+      break;
+  }
+
+  if (toastActive_ && screen_ != Screen::Splash) {
+    drawToast(fb, fbWidth, clip);
+  }
+}
+
+void Ui::drawSplash(uint16_t* fb, int fbWidth, const Rect& clip) {
+  gfx::fillRect(fb, fbWidth, clip, ui_layout::kScreen, kSplashBg);
+  drawTextCentered(fb, fbWidth, clip, {0, 110, 320, 90}, "Pico Paint", kWhite, 4);
+  drawTextCentered(fb, fbWidth, clip, {0, 205, 320, 30}, "M3 UI shell", kAccent, 2);
+
+  char buffer[32];
+  std::snprintf(buffer, sizeof(buffer), "v%s", PAINT_VERSION);
+  drawTextCentered(fb, fbWidth, clip, {0, 245, 320, 24}, buffer, kTextDim, 2);
+  drawTextCentered(fb, fbWidth, clip, {0, 300, 320, 24}, "Tap to skip", kTextDim, 2);
+
+  constexpr int swatch = 12;
+  const int startX = (config::kScreenWidth - ui_layout::kPaletteCount * swatch) / 2;
+  for (int i = 0; i < ui_layout::kPaletteCount; ++i) {
+    gfx::fillRect(fb, fbWidth, clip,
+                  {static_cast<int16_t>(startX + i * swatch), 360, swatch, 10},
+                  ui_layout::kPalette[i]);
+  }
+}
+
+void Ui::drawCanvasScreen(uint16_t* fb, int fbWidth, const Rect& clip) {
+  gfx::fillRect(fb, fbWidth, clip, ui_layout::kScreen, kChrome);
+  gfx::fillRect(fb, fbWidth, clip, ui_layout::kCanvas, config::kPaperColor);
+  drawTopBar(fb, fbWidth, clip);
+  if (sheet_ != Sheet::None) {
+    drawSheet(fb, fbWidth, clip);
+  }
+}
+
+void Ui::drawTopBar(uint16_t* fb, int fbWidth, const Rect& clip) {
+  gfx::fillRect(fb, fbWidth, clip, ui_layout::kTopBar, kChrome);
+  gfx::hline(fb, fbWidth, clip, 0, config::kTopBarHeight - 1, config::kScreenWidth,
+             kChromeLine);
+
+  for (int i = 0; i < 6; ++i) {
+    const Rect r = ui_layout::kButtons[i];
+    const bool active = (i == 0 && sheet_ == Sheet::Tools) ||
+                        (i == 1 && sheet_ == Sheet::Size) ||
+                        (i == 2 && sheet_ == Sheet::Palette) ||
+                        (i == 5 && sheet_ == Sheet::Menu);
+    const bool pressed = pressedButton_ == i;
+    const bool disabled = (i == 3 || i == 4);
+
+    drawButtonFrame(fb, fbWidth, clip, r, pressed, active, disabled);
+
+    switch (i) {
+      case 0:
+        drawToolIcon(fb, fbWidth, clip, r, tool_, kText);
+        break;
+      case 1:
+        drawSizeIcon(fb, fbWidth, clip, r, brushSize_, kText);
+        break;
+      case 2:
+        drawColorIcon(fb, fbWidth, clip, r, color_);
+        break;
+      case 3:
+        drawArrowIcon(fb, fbWidth, clip, r, false, kDisabled);
+        break;
+      case 4:
+        drawArrowIcon(fb, fbWidth, clip, r, true, kDisabled);
+        break;
+      case 5:
+        drawMenuIcon(fb, fbWidth, clip, r, kText);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+void Ui::drawSheet(uint16_t* fb, int fbWidth, const Rect& clip) {
+  const Rect sheet = ui_layout::sheetRect(sheet_);
+  if (sheet.empty()) {
+    return;
+  }
+
+  gfx::fillRect(fb, fbWidth, clip, sheet, kSheet);
+  gfx::fillRect(fb, fbWidth, clip,
+                {sheet.x, sheet.y, sheet.w, 3}, kAccent);
+  gfx::hline(fb, fbWidth, clip, sheet.x, static_cast<int16_t>(sheet.y + 3), sheet.w,
+             kChromeLine);
+
+  switch (sheet_) {
+    case Sheet::Tools:
+      gfx::drawText(fb, fbWidth, clip, {16, static_cast<int16_t>(sheet.y + 8)},
+                    "Tools", kText, 2);
+      for (int i = 0; i < 7; ++i) {
+        const Rect r = ui_layout::toolItemRect(i);
+        const bool active = tool_ == static_cast<Tool>(i);
+        gfx::fillRect(fb, fbWidth, clip, r, active ? kSheetItemActive : kSheetItem);
+        gfx::drawRect(fb, fbWidth, clip, r, active ? kAccent : kButtonBorder);
+        drawTextLeftCentered(fb, fbWidth, clip, r, kToolNames[i], kText, 2, 8);
+      }
+      break;
+
+    case Sheet::Palette:
+      gfx::drawText(fb, fbWidth, clip, {16, static_cast<int16_t>(sheet.y + 8)},
+                    "Colour", kText, 2);
+      {
+        const Rect hsv = ui_layout::kPaletteHsvButton;
+        gfx::fillRect(fb, fbWidth, clip, hsv, kButton);
+        gfx::drawRect(fb, fbWidth, clip, hsv, kButtonBorder);
+        drawTextCentered(fb, fbWidth, clip, hsv, "HSV", kText, 2);
+      }
+      for (int i = 0; i < ui_layout::kPaletteCount; ++i) {
+        const Rect r = ui_layout::paletteSwatchRect(i);
+        gfx::fillRect(fb, fbWidth, clip, r, ui_layout::kPalette[i]);
+        gfx::drawRect(fb, fbWidth, clip, r, kButtonBorder);
+        if (color_ == ui_layout::kPalette[i]) {
+          gfx::drawRect(fb, fbWidth, clip,
+                        {static_cast<int16_t>(r.x - 2), static_cast<int16_t>(r.y - 2),
+                         static_cast<int16_t>(r.w + 4), static_cast<int16_t>(r.h + 4)},
+                        kWhite);
+        }
+      }
+      break;
+
+    case Sheet::Size: {
+      char title[32];
+      std::snprintf(title, sizeof(title), "Brush size: %u px",
+                    static_cast<unsigned>(brushSize_));
+      gfx::drawText(fb, fbWidth, clip, {16, static_cast<int16_t>(sheet.y + 8)},
+                    title, kText, 2);
+      for (int i = 0; i < ui_layout::kBrushSizeCount; ++i) {
+        const Rect r = ui_layout::sizeItemRect(i);
+        const uint8_t size = ui_layout::kBrushSizes[i];
+        const bool active = brushSize_ == size;
+        gfx::fillRect(fb, fbWidth, clip, r, active ? kSheetItemActive : kSheetItem);
+        gfx::drawRect(fb, fbWidth, clip, r, active ? kAccent : kButtonBorder);
+        gfx::fillCircle(fb, fbWidth, clip,
+                        {static_cast<int16_t>(r.x + r.w / 2),
+                         static_cast<int16_t>(r.y + r.h / 2)},
+                        size / 2, kWhite);
+      }
+      break;
+    }
+
+    case Sheet::Menu:
+      gfx::drawText(fb, fbWidth, clip, {16, static_cast<int16_t>(sheet.y + 8)},
+                    "Menu", kText, 2);
+      for (int i = 0; i < 6; ++i) {
+        const Rect r = ui_layout::menuItemRect(i);
+        gfx::fillRect(fb, fbWidth, clip, r, kSheetItem);
+        gfx::drawRect(fb, fbWidth, clip, r, kButtonBorder);
+        drawTextLeftCentered(fb, fbWidth, clip, r, kMenuNames[i], kText, 2, 10);
+      }
+      break;
+
+    default:
+      break;
+  }
+}
+
+void Ui::drawPlaceholder(uint16_t* fb, int fbWidth, const Rect& clip) {
+  gfx::fillRect(fb, fbWidth, clip, ui_layout::kScreen, kSplashBg);
+  gfx::fillRect(fb, fbWidth, clip, ui_layout::kTopBar, kChrome);
+  gfx::hline(fb, fbWidth, clip, 0, config::kTopBarHeight - 1, config::kScreenWidth,
+             kChromeLine);
+
+  drawButtonFrame(fb, fbWidth, clip, ui_layout::kBackButton, pressedBack_, false, false);
+  drawArrowIcon(fb, fbWidth, clip, ui_layout::kBackButton, false, kText);
+
+  const char* title = "Gallery";
+  switch (screen_) {
+    case Screen::Gallery:
+      title = "Gallery";
+      break;
+    case Screen::Settings:
+      title = "Settings";
+      break;
+    case Screen::About:
+      title = "About";
+      break;
+    case Screen::Recovery:
+      title = "Recovery";
+      break;
+    default:
+      break;
+  }
+  gfx::drawText(fb, fbWidth, clip, {80, 12}, title, kText, 3);
+
+  switch (screen_) {
+    case Screen::Gallery:
+      for (int row = 0; row < 2; ++row) {
+        for (int col = 0; col < 2; ++col) {
+          const Rect r{static_cast<int16_t>(20 + col * 150),
+                       static_cast<int16_t>(80 + row * 180), 130, 160};
+          gfx::fillRect(fb, fbWidth, clip, r, kButton);
+          gfx::drawRect(fb, fbWidth, clip, r, kButtonBorder);
+          drawTextCentered(fb, fbWidth, clip, r, "Empty", kTextDim, 2);
+        }
+      }
+      drawTextCentered(fb, fbWidth, clip, {0, 440, 320, 24}, "No drawings yet",
+                       kTextDim, 2);
+      break;
+
+    case Screen::Settings: {
+      const char* lines[6] = {
+          "Rotation: 2 (fixed)",
+          "Brightness: 100%",
+          "Touch: calibrated",
+          "Storage: LittleFS 2 MB",
+          "Wi-Fi & OTA: M7",
+          "Settings land in M8",
+      };
+      for (int i = 0; i < 6; ++i) {
+        gfx::drawText(fb, fbWidth, clip, {20, static_cast<int16_t>(90 + i * 32)},
+                      lines[i], i == 5 ? kTextDim : kText, 2);
+      }
+      break;
+    }
+
+    case Screen::About: {
+      gfx::drawText(fb, fbWidth, clip, {20, 80}, "Pico Paint", kWhite, 3);
+      char buffer[48];
+      std::snprintf(buffer, sizeof(buffer), "Version %s", PAINT_VERSION);
+      gfx::drawText(fb, fbWidth, clip, {20, 120}, buffer, kText, 2);
+      std::snprintf(buffer, sizeof(buffer), "Built %s", PAINT_BUILD_DATE);
+      gfx::drawText(fb, fbWidth, clip, {20, 148}, buffer, kTextDim, 2);
+      gfx::drawText(fb, fbWidth, clip, {20, 176}, PAINT_BUILD_TIME, kTextDim, 2);
+      gfx::drawText(fb, fbWidth, clip, {20, 216}, "Pico 2 W (RP2350)", kText, 2);
+      gfx::drawText(fb, fbWidth, clip, {20, 244}, "ILI9488 320x480", kText, 2);
+      gfx::drawText(fb, fbWidth, clip, {20, 272}, "HR2046 touch", kText, 2);
+      gfx::drawText(fb, fbWidth, clip, {20, 300}, "LittleFS 2 MB", kText, 2);
+      gfx::drawText(fb, fbWidth, clip, {20, 340}, "M3 immediate-mode UI", kTextDim, 2);
+      break;
+    }
+
+    case Screen::Recovery:
+      drawTextCentered(fb, fbWidth, clip, {0, 200, 320, 24}, "Recovery mode",
+                       kText, 3);
+      drawTextCentered(fb, fbWidth, clip, {0, 240, 320, 24}, "Hold touch at boot (M8)",
+                       kTextDim, 2);
+      break;
+
+    default:
+      break;
+  }
+}
+
+void Ui::drawToast(uint16_t* fb, int fbWidth, const Rect& clip) {
+  if (!toastActive_) {
+    return;
+  }
+  gfx::fillRect(fb, fbWidth, clip, ui_layout::kToast, kToastBg);
+  gfx::drawRect(fb, fbWidth, clip, ui_layout::kToast, kAccent);
+  drawTextCentered(fb, fbWidth, clip, ui_layout::kToast, toast_, kWhite, 2);
+}
+
+}  // namespace paint

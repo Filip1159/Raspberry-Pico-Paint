@@ -1,6 +1,7 @@
 #pragma once
 
-// 1-bit icon bitmaps live in flash. Definitions land with the UI in M3.
+// The M3 shell draws compact vector icons in src/ui/ui.cpp. This 1-bit
+// bitmap structure is reserved for the polished M8 icon set.
 
 #include <cstdint>
 

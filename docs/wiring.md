@@ -68,5 +68,5 @@ GND ─────────────┴───────────�
 - [ ] Measure 3.3 V at the module.
 - [x] Confirm `LED` is a control input: 10k to 3V3 lights the panel (2026-10-24). Total current not yet measured.
 - [x] Display shows colour bars with correct orientation (M2, rotation 2).
-- [x] Touch raw values respond across the whole panel (2026-10-24). Flash `pico2w_usb`, open the serial monitor, and check the raw/mapped `[touch]` lines and the red crosshair at each corner.
+- [x] Touch raw values respond across the whole panel (2026-10-24). The normal build prints debounced `[touch] down/up/tap/long-press` events while the UI is live; flash `pico2w_diag` for `move` and raw `[touch] raw=... z=... mapped=...` samples. The four calibration points map to `(0,0)`, `(319,0)`, `(0,479)` and `(319,479)` within about 1 px.
 - [ ] No component gets hot.
