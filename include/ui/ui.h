@@ -173,6 +173,22 @@ constexpr int hitSheetItem(Sheet sheet, Point p) {
 
 constexpr bool hitPaletteHsv(Point p) { return kPaletteHsvButton.contains(p); }
 
+// The top-bar button whose active state follows a sheet.
+constexpr int sheetButton(Sheet sheet) {
+  switch (sheet) {
+    case Sheet::Tools:
+      return 0;
+    case Sheet::Size:
+      return 1;
+    case Sheet::Palette:
+      return 2;
+    case Sheet::Menu:
+      return 5;
+    default:
+      return -1;
+  }
+}
+
 constexpr int kPaletteCount = 24;
 constexpr int kBrushSizeCount = 7;
 

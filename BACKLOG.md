@@ -1,7 +1,7 @@
 # Pico Paint — Backlog & Implementation Plan
 
 **Target hardware:** Raspberry Pi Pico 2 W (RP2350, 4 MB flash, 520 KB SRAM) + 4" 480×320 ILI9488 SPI TFT (used in **portrait 320×480**) with **HR2046 / XPT2046-compatible** resistive touch
-**Status:** M0–M3 touch path hardware-verified; M3 UI shell implemented and host-previewed, on-device verification next
+**Status:** M0–M3 hardware-verified; M3 UI shell on-device verified; calibration persistence and guided calibration remain
 **Last updated:** 2026-10-24
 
 ---
@@ -38,19 +38,20 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - M1 skeleton is in place and **hardware-verified on 2026-10-24**: serial banner, LittleFS `total=2097152 used=8192 free=2088960`, free heap 452,472 B. The onboard backlight driver is confirmed: `LED` tied to 3V3 through 10k lights the panel.
 - M2 implementation is in place: ILI9488 init/rotation/address-window driver, RGB565→RGB666 line-buffer flush, `gfx` primitives (rect, hline/vline, line, circle, fillCircle, text, blit), 5×7 font, dirty-region helper, benchmarks and the original diagnostics screen (now retired from the normal boot).
 - Builds verified on 2026-10-24:
-  - `pico2w_usb`: **SUCCESS** — RAM 72,656 B (13.9%), flash 343,200 B (16.4%)
-  - `pico2w_ota`: **SUCCESS** — RAM 72,656 B, flash 343,200 B
-  - `pico2w_diag`: **SUCCESS** — RAM 72,728 B (13.9%), flash 343,704 B (16.4%)
-- Native tests pass under WSL g++ (20/20, including the disjoint-rect dirty-region, touch-calibration, touch-state, font-range and UI-layout tests). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
+  - `pico2w_usb`: **SUCCESS** — RAM 72,656 B (13.9%), flash 343,264 B (16.4%)
+  - `pico2w_ota`: **SUCCESS** — RAM 72,656 B, flash 343,272 B
+  - `pico2w_diag`: **SUCCESS** — RAM 72,728 B (13.9%), flash 343,776 B (16.4%)
+- Native tests pass under WSL g++ (21/21, including the disjoint-rect dirty-region, touch-calibration, touch-state, font-range and UI-layout tests). The Windows host has no `gcc`/`g++`, so `pio test -e native` must run in WSL/Linux or CI.
 - M2 is hardware-verified: correct colours, upright portrait at rotation 2, no offset/clipping, stable 40 MHz SPI, 139.3 ms full-screen flush, 143,360 B free heap after the framebuffer.
 - M3-1 is hardware-validated: the HR2046 responds on SPI1 at all four corners. Raw ranges are roughly X 260–3880 and Y 298–3807. The normal build prints `down`, `up`, `tap` and `long-press`; `pico2w_diag` additionally prints `move`, raw samples and UI flush timings.
 - M3-2 calibration is implemented as a full Q16.16 affine least-squares fit from four corner samples. The panel's raw axes are rotated 90° relative to the display (raw X top→bottom, raw Y left→right), so the transform includes cross terms; all four corners map within ~1 px. Persistence in `/config.bin` and the guided calibration screen (M3-8) remain.
 - M3-3 touch state machine is implemented: two-sample press/release debounce, 2 px move threshold, tap detection (≤10 px travel), one-shot 600 ms long-press, and a frame structure for the UI. The diagnostics build prints `down`, `move`, `up`, `tap` and `long-press` events.
 - M3-4/M3-5/M3-6 UI shell is implemented: `Ui` layout and hit testing, 48 px top bar with six 44×44 buttons, blank paper canvas, vector icons, tools/palette/size/menu bottom sheets, toast, and Gallery/Settings/About/Recovery placeholders. The 5×7 font now indexes the full 256-glyph table from ASCII 0, which fixed the garbled host-preview text.
-- The UI has been rendered on the host at 320×480 for splash, canvas, every sheet, placeholders and toast. All text and layouts look structurally correct; on-device colour, touch targeting and flush timing still need verification.
-- Git repository initialized (`main`); M1, M2 and the M3 touch driver are committed. The UI shell is ready for on-device verification.
+- The UI has been rendered on the host at 320×480 for splash, canvas, every sheet, placeholders and toast, and is now hardware-verified on 2026-10-24: splash → canvas, all six top-bar buttons, tools/palette/size/menu sheets, toasts, and Gallery/Settings/About back navigation. Free heap is **142,800 B**.
+- Measured M3 UI flushes: 44×44 top-bar button 1.85–1.98 ms; 288×36 toast 9.44 ms; sheet flushes 34.9–98.7 ms; full-screen transition 139.3 ms. `setSheet()` now dirties only the affected 44×44 button(s) instead of the whole 320×48 bar, saving ~12 ms per sheet transition. Details in `docs/performance.md`.
+- Git repository initialized (`main`); M1, M2, the M3 touch driver and the M3 UI shell are committed.
 
-**Next action:** flash `pico2w_usb`, verify splash → canvas, top-bar taps, sheet open/close/switch, toast expiry and Gallery/Settings/About back navigation on the panel. Then measure `[ui] flush` timings in `pico2w_diag`, finish touch-calibration persistence (M3-2/M3-8/M3-9), and move to the M4 canvas buffer/drawing engine.
+**Next action:** finish touch-calibration persistence (M3-2), add the guided calibration screen (M3-8) and verify calibration survives reboot (M3-9), then move to the M4 canvas buffer/drawing engine. Reflash the button-dirty optimization when convenient to confirm sheet totals drop to ≈54/66/37/101 ms.
 
 ---
 

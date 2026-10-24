@@ -342,6 +342,14 @@ static void test_ui_layout_canvas_and_sheets() {
   TEST_ASSERT_FALSE(ui_layout::hitBackButton({70, 24}));
 }
 
+static void test_ui_layout_sheet_buttons() {
+  TEST_ASSERT_EQUAL_INT(-1, ui_layout::sheetButton(Sheet::None));
+  TEST_ASSERT_EQUAL_INT(0, ui_layout::sheetButton(Sheet::Tools));
+  TEST_ASSERT_EQUAL_INT(1, ui_layout::sheetButton(Sheet::Size));
+  TEST_ASSERT_EQUAL_INT(2, ui_layout::sheetButton(Sheet::Palette));
+  TEST_ASSERT_EQUAL_INT(5, ui_layout::sheetButton(Sheet::Menu));
+}
+
 static void test_ui_layout_sheet_hits() {
   TEST_ASSERT_EQUAL_INT(0, ui_layout::hitSheetItem(Sheet::Tools, {86, 353}));
   TEST_ASSERT_EQUAL_INT(6, ui_layout::hitSheetItem(Sheet::Tools, {86, 461}));
@@ -381,6 +389,7 @@ int main(int, char**) {
   RUN_TEST(test_font_covers_full_table);
   RUN_TEST(test_ui_layout_top_bar);
   RUN_TEST(test_ui_layout_canvas_and_sheets);
+  RUN_TEST(test_ui_layout_sheet_buttons);
   RUN_TEST(test_ui_layout_sheet_hits);
   return UNITY_END();
 }

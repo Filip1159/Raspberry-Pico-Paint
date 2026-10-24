@@ -10,14 +10,14 @@ Milestone **M1** is hardware-verified (serial banner, 2 MB LittleFS, free heap).
 Milestone **M2** — ILI9488 driver, RGB565→RGB666 flush, graphics primitives and
 the diagnostics screen (since retired) — is hardware-verified: correct colours, upright portrait
 (rotation 2), stable 40 MHz SPI and a 139.3 ms full-screen flush. Milestone **M3**
-(touch input and UI shell) has a hardware-validated XPT2046/HR2046 driver, a
-4-point affine calibration and a debounced touch state machine. The immediate-mode
-UI shell is implemented and has been previewed on the host: 800 ms splash, canvas,
-48 px top bar, tools/palette/brush-size/menu bottom sheets, toasts, and placeholder
-Gallery/Settings/About screens. On-device UI verification and calibration
-persistence are the remaining M3 work. The paint engine lands in M4–M6; OTA lands
-in M7. See [`BACKLOG.md`](BACKLOG.md) for the full plan and
-[`docs/performance.md`](docs/performance.md) for benchmark results.
+(touch input and UI shell) is hardware-verified: XPT2046/HR2046 driver, 4-point
+affine calibration, debounced touch state machine, and an immediate-mode UI with
+an 800 ms splash, canvas, 48 px top bar, tools/palette/brush-size/menu bottom
+sheets, toasts, and placeholder Gallery/Settings/About screens. Calibration
+persistence and the guided calibration screen are the remaining M3 work. The
+paint engine lands in M4–M6; OTA lands in M7. See [`BACKLOG.md`](BACKLOG.md) for
+the full plan and [`docs/performance.md`](docs/performance.md) for benchmark
+results.
 
 ## Hardware
 

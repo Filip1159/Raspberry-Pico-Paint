@@ -216,9 +216,16 @@ void Ui::setSheet(Sheet next) {
     toastActive_ = false;
     dirty_.add(ui_layout::kToast);
   }
-  // The active sheet is reflected in the top bar, so repaint the bar even when
-  // the sheet is closed by tapping outside it.
-  dirty_.add(ui_layout::kTopBar);
+  // Only the button(s) whose active state changes need repainting. Marking the
+  // whole 320x48 top bar costs ~14 ms on hardware; a 44x44 button is ~1.9 ms.
+  const int oldButton = ui_layout::sheetButton(sheet_);
+  const int newButton = ui_layout::sheetButton(next);
+  if (oldButton >= 0) {
+    dirty_.add(ui_layout::kButtons[oldButton]);
+  }
+  if (newButton >= 0) {
+    dirty_.add(ui_layout::kButtons[newButton]);
+  }
   const Rect oldRect = ui_layout::sheetRect(sheet_);
   const Rect newRect = ui_layout::sheetRect(next);
   sheet_ = next;
