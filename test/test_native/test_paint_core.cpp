@@ -8,6 +8,7 @@
 #include "paint/canvas.h"
 #include "paint/color.h"
 #include "paint/geometry.h"
+#include "paint/shapes.h"
 #include "paint/stroke.h"
 #include "paint/undo.h"
 #include "storage/settings_codec.h"
@@ -319,6 +320,91 @@ static void test_undo_redo_round_trip() {
   TEST_ASSERT_EQUAL_INT(0, cleared.actions);
   TEST_ASSERT_EQUAL_INT(0, cleared.records);
   TEST_ASSERT_EQUAL_INT(0, cleared.bytes);
+}
+
+static void test_shape_preview_cancel_leaves_no_residue() {
+  Canvas canvas = testCanvas();
+  canvas.clear(config::kPaperColor);
+  canvas.clearDirty();
+
+  ShapePreview preview;
+  preview.update(canvas, ShapeKind::Line, {20, 100}, {200, 300});
+  TEST_ASSERT_TRUE(preview.active());
+  TEST_ASSERT_TRUE(canvas.pixel(20, 100) != config::kPaperColor);
+  TEST_ASSERT_TRUE(canvas.pixel(200, 300) != config::kPaperColor);
+
+  preview.update(canvas, ShapeKind::Rect, {20, 100}, {200, 300});
+  TEST_ASSERT_TRUE(canvas.pixel(20, 100) != config::kPaperColor);
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(110, 200));
+
+  preview.cancel(canvas);
+  TEST_ASSERT_FALSE(preview.active());
+  for (int y = 96; y <= 304; ++y) {
+    for (int x = 16; x <= 204; ++x) {
+      TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(x, y));
+    }
+  }
+}
+
+static void test_shape_commit_rect_and_ellipse_undo() {
+  Canvas canvas = testCanvas();
+  canvas.clear(config::kPaperColor);
+  canvas.clearDirty();
+
+  UndoStack undo;
+  ShapePreview preview;
+  preview.update(canvas, ShapeKind::Rect, {40, 100}, {120, 160});
+  preview.commit(canvas, undo, ShapeKind::Rect, {40, 100}, {120, 160}, kBlue);
+  TEST_ASSERT_TRUE(undo.commit());
+  TEST_ASSERT_FALSE(preview.active());
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(40, 100));
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(120, 160));
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(40, 130));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(80, 130));
+
+  TEST_ASSERT_TRUE(undo.undo(canvas));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(40, 100));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(40, 130));
+
+  preview.commit(canvas, undo, ShapeKind::Ellipse, {40, 100}, {120, 160}, kRed);
+  TEST_ASSERT_TRUE(undo.commit());
+  TEST_ASSERT_EQUAL_HEX16(kRed, canvas.pixel(40, 130));
+  TEST_ASSERT_EQUAL_HEX16(kRed, canvas.pixel(120, 130));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(80, 130));
+  TEST_ASSERT_TRUE(undo.undo(canvas));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(40, 130));
+}
+
+static void test_flood_fill_stays_inside_outline() {
+  Canvas canvas = testCanvas();
+  canvas.clear(config::kPaperColor);
+  canvas.clearDirty();
+
+  UndoStack undo;
+  ShapePreview preview;
+  preview.commit(canvas, undo, ShapeKind::Rect, {40, 100}, {120, 160}, kBlue);
+  TEST_ASSERT_TRUE(undo.commit());
+
+  undo.beginAction();
+  TEST_ASSERT_TRUE(floodFill(canvas, &undo, {80, 130}, kRed));
+  TEST_ASSERT_TRUE(undo.commit());
+  TEST_ASSERT_EQUAL_HEX16(kRed, canvas.pixel(80, 130));
+  TEST_ASSERT_EQUAL_HEX16(kRed, canvas.pixel(41, 101));
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(40, 130));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(10, 130));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(130, 130));
+
+  TEST_ASSERT_TRUE(undo.undo(canvas));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(80, 130));
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(40, 130));
+}
+
+static void test_flood_fill_same_colour_is_noop() {
+  Canvas canvas = testCanvas();
+  canvas.clear(config::kPaperColor);
+  canvas.clearDirty();
+  TEST_ASSERT_TRUE(floodFill(canvas, nullptr, {80, 130}, config::kPaperColor));
+  TEST_ASSERT_FALSE(canvas.dirty());
 }
 
 static void test_undo_multiple_actions_and_new_action_discards_redo() {
@@ -1012,6 +1098,10 @@ int main(int, char**) {
   RUN_TEST(test_stroke_is_continuous_and_clipped);
   RUN_TEST(test_stroke_controller_eraser_and_cancel);
   RUN_TEST(test_undo_redo_round_trip);
+  RUN_TEST(test_shape_preview_cancel_leaves_no_residue);
+  RUN_TEST(test_shape_commit_rect_and_ellipse_undo);
+  RUN_TEST(test_flood_fill_stays_inside_outline);
+  RUN_TEST(test_flood_fill_same_colour_is_noop);
   RUN_TEST(test_undo_multiple_actions_and_new_action_discards_redo);
   RUN_TEST(test_undo_compressed_deltas_keep_ten_actions);
   RUN_TEST(test_undo_raw_tile_fallback);

@@ -326,6 +326,13 @@ void Ui::setSheet(Sheet next) {
   }
 }
 
+void Ui::pickColor(uint16_t color, uint32_t nowMs) {
+  color_ = color;
+  rememberColor(color_);
+  dirty_.add(ui_layout::kButtons[2]);
+  showToast("Colour picked", nowMs);
+}
+
 void Ui::showToast(const char* text, uint32_t nowMs) {
   std::snprintf(toast_, sizeof(toast_), "%s", text ? text : "");
   toastActive_ = true;

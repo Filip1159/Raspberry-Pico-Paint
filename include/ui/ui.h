@@ -279,6 +279,9 @@ class Ui {
   uint16_t color() const { return color_; }
   bool toastVisible() const { return toastActive_; }
 
+  // Eyedropper: the canvas pixel becomes the current colour.
+  void pickColor(uint16_t color, uint32_t nowMs);
+
   void setUndoRedoAvailable(bool canUndo, bool canRedo) {
     if (undoAvailable_ != canUndo) {
       undoAvailable_ = canUndo;

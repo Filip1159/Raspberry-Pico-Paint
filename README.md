@@ -34,14 +34,11 @@ clearing; the diagnostics build produced the timings below. It includes:
 - A 320×32 overlay scratch band so sheets, toasts, Settings, Gallery and
   calibration never destroy the canvas beneath them.
 
-M4 firmware builds are clean (`pico2w_usb` RAM 138,032 B / flash 419,576 B;
-`pico2w_ota` RAM 138,032 B / flash 419,576 B; `pico2w_diag` RAM 138,132 B /
-flash 420,864 B), and the native suite passes **40/40**. Hardware profiling
-showed a flat **57,008 B** free heap for 5+ minutes, first-dab flushes of
-0.33–1.0 ms, and 1/8/24 px stroke flushes of ~0.14/0.15/0.66 ms. Long 8/24 px
-squiggles can exceed the 32-tile undo cap, and HSV taps take 90–103 ms; these
-are tracked as follow-ups M4-11/M4-12. M5–M6 add the shape, fill and
-eyedropper tools plus storage/gallery; OTA lands in M7. See
+M5 firmware builds are clean (`pico2w_usb` RAM 159,424 B / flash 423,056 B;
+`pico2w_diag` RAM 159,524 B / flash 424,328 B), and the native suite passes **44/44**.
+M5 adds the line, rectangle, ellipse, flood fill and eyedropper tools with
+rubber-band preview, XOR commit and full undo support. M6 adds
+storage/gallery; OTA lands in M7. See
 [`BACKLOG.md`](BACKLOG.md) for the full plan and
 [`docs/performance.md`](docs/performance.md) for the memory budget and
 benchmarks.

@@ -1,7 +1,7 @@
 # Pico Paint — Backlog & Implementation Plan
 
 **Target hardware:** Raspberry Pi Pico 2 W (RP2350, 4 MB flash, 520 KB SRAM) + 4" 480×320 ILI9488 SPI TFT (used in **portrait 320×480**) with **HR2046 / XPT2046-compatible** resistive touch
-**Status:** M0–M3 complete and hardware-verified; M4 drawing engine implemented, hardware-profiled and manually validated; M5 tools next, with M4-11/M4-12 follow-ups
+**Status:** M0–M4 complete and hardware-verified; M5 (line, rectangle, ellipse, flood fill, eyedropper) implemented and native-tested; M4-11/M4-12 follow-ups open; M6 storage next
 **Last updated:** 2026-10-24
 
 ---
@@ -45,6 +45,7 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - M4 was **hardware-validated on 2026-10-24** with the diagnostics build on COM16. Drawing, undo, New-canvas clear and the overlay flows work. Free heap is **57,008 B** on the normal build and **56,904 B** on the diag build, flat through 5+ minutes of activity; the estimated 58,576 B budget differs only by allocator overhead.
 - M4 flushes: 1 px stroke ~139–152 µs/frame (100 Hz touch-limited), 8 px ~143–153 µs (87–96 Hz), 24 px ~648–681 µs (78–93 Hz); first-dab flush 0.33–1.0 ms. A 3.9 s 1 px stroke used 31 undo tile records / 4,560 B; five 24 px dots used 11 records / 1,372 B and undid in 2.1–3.1 ms.
 - M4 profiling found two follow-ups: long 8/24 px squiggles exceeded the 32-tile per-action undo cap and showed "Stroke too large to undo" (M4-11), and HSV taps take 90–103 ms with the 179 ms HSV open, above the 50 ms target (M4-12).
+- M5 builds verified on 2026-10-24: `pico2w_usb` RAM **159,424 B (30.4%)**, flash **423,056 B (20.2%)**; `pico2w_diag` RAM **159,524 B**, flash **424,328 B**. Native suite **44/44** including shape preview/cancel, commit+undo for rect/ellipse, flood fill inside/outside outline, and flood fill noop. Free heap budget **37,184 B**.
 - M4 drawing engine is implemented and hardware-validated: clipped `Canvas` over the shared framebuffer, seven round brush masks, gap-free brush/eraser strokes with per-dab undo capture, palette + five recent colours, HSV picker, compressed undo/redo, New-canvas confirmation, and overlay-safe presentation for sheets/toasts/screens. Host-preview screenshots exercise the art, sheets, toast, undo/redo, New confirmation, HSV picking and recent-colour row.
 - Undo/redo uses a fixed ~64 KB in-object pool: 44 RLE tile records + 7 raw tile records, up to 16 actions and 32 tiles/action. Each action captures "before" tiles, converts them to XOR deltas at commit, and evicts the oldest action when the pool fills. Ten normal undo levels now fit in cases that previously exhausted the 30 raw-tile pool; pathological strokes can still trim history.
 - M2 is hardware-verified: correct colours, upright portrait at rotation 2, no offset/clipping, stable 40 MHz SPI, 139.3 ms full-screen flush, 143,360 B free heap after the framebuffer.
@@ -385,13 +386,13 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 
 **Goal:** complete the "Standard" tool set without compromising responsiveness.
 
-- [ ] M5-1 Line tool with XOR preview and commit on release.
-- [ ] M5-2 Rectangle tool (outline; optional filled variant in the tool options).
-- [ ] M5-3 Ellipse tool (outline; optional filled).
-- [ ] M5-4 Scanline flood fill (4-connected, exact RGB565 match, clipped to canvas).
-- [ ] M5-5 Eyedropper: sample canvas pixel, set as current colour, show a toast.
+- [x] M5-1 Line tool with XOR preview and commit on release.
+- [x] M5-2 Rectangle tool (outline; optional filled variant in the tool options).
+- [x] M5-3 Ellipse tool (outline; optional filled).
+- [x] M5-4 Scanline flood fill (4-connected, exact RGB565 match, clipped to canvas).
+- [x] M5-5 Eyedropper: sample canvas pixel, set as current colour, show a toast.
 - [ ] M5-6 Tool options row: size + filled/outline for shapes.
-- [ ] M5-7 Ensure every tool action is undoable (including fill via RLE snapshot).
+- [x] M5-7 Ensure every tool action is undoable (including fill via RLE snapshot).
 - [ ] M5-8 Handle edge cases: start/end outside canvas, drag over toolbar, rotation changes, interrupted touch.
 
 **Acceptance:** preview leaves no residue after cancel; fill never escapes the canvas; picker returns the exact colour; all tools undo correctly.

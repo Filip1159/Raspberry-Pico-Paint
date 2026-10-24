@@ -13,6 +13,28 @@ Measured 2026-10-24 with the pinned RP2350 platform (M4 build):
 The diagnostics build is ~100 B larger because it carries the profiling
 counters and undo-usage reporting.
 
+### M5 (shapes, fill, eyedropper)
+
+After adding the header-only `ShapePreview` (19 KB bitset), rubber-band
+rasterisers and scanline flood fill, the M5 builds are:
+
+| Environment | RAM | Flash |
+|---|---:|---:|
+| `pico2w_usb` | 159,424 B (30.4%) | 423,056 B (20.2%) |
+| `pico2w_diag` | 159,524 B (30.4%) | 424,328 B (20.3%) |
+
+The `ShapePreview` bitset is `(320*480)/8 = 19,200 B`; the rest is the
+rasteriser code and flood-fill stack. The free-heap budget becomes:
+
+```
+524,288 - 159,424 (static) - 307,200 (framebuffer) - 20,480 (scratch)
+= 37,184 B
+```
+
+This is above the 24 KB Wi-Fi minimum but leaves less margin; the M6
+autosave buffer will be allocated from the remaining heap. The diag build
+adds ~100 B for profiling.
+
 The 320×480 RGB565 framebuffer is allocated from the heap at boot
 (307,200 B), and the overlay scratch is a 320×32 band (20,480 B). The M4
 static RAM figure includes the fixed undo pool and UI state. The expected

@@ -15,6 +15,7 @@
 #include "paint/brush.h"
 #include "paint/canvas.h"
 #include "paint/color.h"
+#include "paint/shapes.h"
 #include "paint/stroke.h"
 #include "paint/undo.h"
 #include "storage/settings.h"
@@ -44,6 +45,9 @@ uint16_t* gOverlayScratch = nullptr;
 paint::Canvas gCanvas;
 paint::StrokeController gStroke;
 paint::UndoStack gUndo;
+paint::ShapePreview gShape;
+paint::ShapeKind gShapeKind = paint::ShapeKind::Line;
+paint::Point gShapeStart;
 bool gBaseReady = false;
 bool gSettingsLoaded = false;
 #ifdef PAINT_DIAG
@@ -286,6 +290,35 @@ paint::Point clampToCanvas(paint::Point p) {
     y = paint::ui_layout::kCanvas.bottom() - 1;
   }
   return paint::Point{static_cast<int16_t>(x), static_cast<int16_t>(y)};
+}
+
+bool isShapeTool(paint::Tool tool) {
+  return tool == paint::Tool::Line || tool == paint::Tool::Rect ||
+         tool == paint::Tool::Ellipse;
+}
+
+paint::ShapeKind shapeKindFor(paint::Tool tool) {
+  switch (tool) {
+    case paint::Tool::Rect:
+      return paint::ShapeKind::Rect;
+    case paint::Tool::Ellipse:
+      return paint::ShapeKind::Ellipse;
+    default:
+      return paint::ShapeKind::Line;
+  }
+}
+
+void cancelShape() {
+  if (gShape.active()) {
+    gShape.cancel(gCanvas);
+  }
+}
+
+void finishUndoAction(uint32_t nowMs) {
+  if (gUndo.takeOverflow()) {
+    gUi.notify("Stroke too large to undo", nowMs);
+  }
+  gUi.setUndoRedoAvailable(gUndo.canUndo(), gUndo.canRedo());
 }
 
 void printBanner() {
@@ -572,6 +605,7 @@ void loop() {
   }
 
   if (gUi.takeUndoRequest()) {
+    cancelShape();
     if (gStroke.active()) {
       gStroke.cancel();
       gUndo.commit();
@@ -585,6 +619,7 @@ void loop() {
   }
 
   if (gUi.takeRedoRequest()) {
+    cancelShape();
     if (gStroke.active()) {
       gStroke.cancel();
       gUndo.commit();
@@ -598,6 +633,7 @@ void loop() {
   }
 
   if (gUi.takeNewCanvasRequest()) {
+    cancelShape();
     gStroke.cancel();
     gUndo.clear();
     gCanvas.clear(paint::config::kPaperColor);
@@ -637,8 +673,43 @@ void loop() {
     }
   }
 
+  if (canDraw && isShapeTool(gUi.tool())) {
+    if (frame.down && frame.y >= paint::config::kTopBarHeight) {
+      gShapeKind = shapeKindFor(gUi.tool());
+      gShapeStart = clampToCanvas({frame.x, frame.y});
+      gShape.update(gCanvas, gShapeKind, gShapeStart, gShapeStart);
+    } else if (gShape.active() && frame.move) {
+      gShape.update(gCanvas, gShapeKind, gShapeStart,
+                    clampToCanvas({frame.x, frame.y}));
+    } else if (gShape.active() && frame.up) {
+      gShape.commit(gCanvas, gUndo, gShapeKind, gShapeStart,
+                    clampToCanvas({frame.x, frame.y}), gUi.color());
+      gUndo.commit();
+      finishUndoAction(now);
+    }
+  }
+
+  if (canDraw && gUi.tool() == paint::Tool::Fill && frame.down &&
+      frame.y >= paint::config::kTopBarHeight) {
+    gUndo.beginAction();
+    const bool filled = paint::floodFill(
+        gCanvas, &gUndo, clampToCanvas({frame.x, frame.y}), gUi.color());
+    gUndo.commit();
+    finishUndoAction(now);
+    if (!filled) {
+      gUi.notify("Fill area too complex", now);
+    }
+  }
+
+  if (canDraw && gUi.tool() == paint::Tool::Picker && frame.down &&
+      frame.y >= paint::config::kTopBarHeight) {
+    const paint::Point p = clampToCanvas({frame.x, frame.y});
+    gUi.pickColor(gCanvas.pixel(p.x, p.y), now);
+  }
+
   if (gUi.screen() != paint::Screen::Canvas ||
       gUi.sheet() != paint::Sheet::None) {
+    cancelShape();
     if (gStroke.active()) {
       gStroke.cancel();
       gUndo.commit();
