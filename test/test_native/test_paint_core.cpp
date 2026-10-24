@@ -328,12 +328,12 @@ static void test_shape_preview_cancel_leaves_no_residue() {
   canvas.clearDirty();
 
   ShapePreview preview;
-  preview.update(canvas, ShapeKind::Line, {20, 100}, {200, 300});
+  preview.update(canvas, ShapeKind::Line, {20, 100}, {200, 300}, kBlue);
   TEST_ASSERT_TRUE(preview.active());
   TEST_ASSERT_TRUE(canvas.pixel(20, 100) != config::kPaperColor);
   TEST_ASSERT_TRUE(canvas.pixel(200, 300) != config::kPaperColor);
 
-  preview.update(canvas, ShapeKind::Rect, {20, 100}, {200, 300});
+  preview.update(canvas, ShapeKind::Rect, {20, 100}, {200, 300}, kBlue);
   TEST_ASSERT_TRUE(canvas.pixel(20, 100) != config::kPaperColor);
   TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(110, 200));
 
@@ -353,7 +353,7 @@ static void test_shape_commit_rect_and_ellipse_undo() {
 
   UndoStack undo;
   ShapePreview preview;
-  preview.update(canvas, ShapeKind::Rect, {40, 100}, {120, 160});
+  preview.update(canvas, ShapeKind::Rect, {40, 100}, {120, 160}, kBlue);
   preview.commit(canvas, undo, ShapeKind::Rect, {40, 100}, {120, 160}, kBlue);
   TEST_ASSERT_TRUE(undo.commit());
   TEST_ASSERT_FALSE(preview.active());

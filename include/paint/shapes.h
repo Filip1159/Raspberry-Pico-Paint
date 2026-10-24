@@ -139,39 +139,62 @@ inline Rect shapeBounds(Point a, Point b) {
 
 }  // namespace shape_detail
 
-// Rubber-band preview. Pixels touched by the shape are inverted with XOR, and
-// a one-bit-per-pixel set remembers which ones are inverted. Re-rasterising the
-// old and new shapes only toggles the symmetric difference, and cancelling
-// restores the exact background, even where a shape crosses itself.
+// Rubber-band preview. Saves the background pixels under the shape path, draws
+// the shape in the actual colour, and on update/cancel restores the saved
+// background. No XOR inversion — the preview shows the real colour from the start.
 class ShapePreview {
  public:
-  static constexpr int kPixels = config::kCanvasWidth * config::kCanvasHeight;
-  static constexpr uint16_t kXorMask = 0xFFFF;
+  static constexpr int kMaxPixels = 2048;  // enough for max perimeter (2*(320+480))
+
+  struct SavedPixel {
+    int16_t x;
+    int16_t y;
+    uint16_t color;
+  };
 
   bool active() const { return active_; }
 
-  void update(Canvas& canvas, ShapeKind kind, Point a, Point b) {
+  void update(Canvas& canvas, ShapeKind kind, Point a, Point b, uint16_t color) {
     if (!canvas.ready()) {
       return;
     }
-    Rect dirty = shape_detail::shapeBounds(a, b);
+    // Restore previous background.
     if (active_) {
-      dirty = dirty.unite(shape_detail::shapeBounds(a_, b_));
-      remove(canvas, kind_, a_, b_);
+      restore(canvas);
     }
-    add(canvas, kind, a, b);
+
+    // Compute new bounds and save new background.
     kind_ = kind;
     a_ = a;
     b_ = b;
+    color_ = color;
+
+    count_ = 0;
+    shape_detail::rasterShape(kind_, a_, b_, [&](int x, int y) {
+      if (!inBounds(canvas, x, y) || count_ >= kMaxPixels) {
+        return;
+      }
+      saved_[count_++] = {static_cast<int16_t>(x), static_cast<int16_t>(y),
+                          canvas.pixels()[y * canvas.stride() + x]};
+    });
+
+    // Draw new shape in the actual colour.
+    shape_detail::rasterShape(kind_, a_, b_, [&](int x, int y) {
+      if (!inBounds(canvas, x, y)) {
+        return;
+      }
+      canvas.pixels()[y * canvas.stride() + x] = color_;
+    });
+
+    canvas.markDirty(shape_detail::shapeBounds(a_, b_));
     active_ = true;
-    canvas.markDirty(dirty);
   }
 
   void cancel(Canvas& canvas) {
     if (!active_) {
       return;
     }
-    remove(canvas, kind_, a_, b_);
+    restore(canvas);
     canvas.markDirty(shape_detail::shapeBounds(a_, b_));
     active_ = false;
   }
@@ -197,47 +220,20 @@ class ShapePreview {
     return canvas.bounds().contains(static_cast<int16_t>(x), static_cast<int16_t>(y));
   }
 
-  static int bitIndex(const Canvas& canvas, int x, int y) {
-    if (!inBounds(canvas, x, y)) {
-      return -1;
+  void restore(Canvas& canvas) {
+    for (int i = 0; i < count_; ++i) {
+      const SavedPixel& p = saved_[i];
+      canvas.pixels()[p.y * canvas.stride() + p.x] = p.color;
     }
-    return (y - canvas.bounds().y) * config::kCanvasWidth + (x - canvas.bounds().x);
+    count_ = 0;
   }
 
-  bool test(int bit) const { return (bits_[bit >> 3] & (1u << (bit & 7))) != 0; }
-  void set(int bit) { bits_[bit >> 3] |= static_cast<uint8_t>(1u << (bit & 7)); }
-  void clear(int bit) { bits_[bit >> 3] &= static_cast<uint8_t>(~(1u << (bit & 7))); }
-
-  static void invert(Canvas& canvas, int x, int y) {
-    canvas.pixels()[y * canvas.stride() + x] ^= kXorMask;
-  }
-
-  void add(Canvas& canvas, ShapeKind kind, Point a, Point b) {
-    shape_detail::rasterShape(kind, a, b, [&](int x, int y) {
-      const int bit = bitIndex(canvas, x, y);
-      if (bit < 0 || test(bit)) {
-        return;
-      }
-      set(bit);
-      invert(canvas, x, y);
-    });
-  }
-
-  void remove(Canvas& canvas, ShapeKind kind, Point a, Point b) {
-    shape_detail::rasterShape(kind, a, b, [&](int x, int y) {
-      const int bit = bitIndex(canvas, x, y);
-      if (bit < 0 || !test(bit)) {
-        return;
-      }
-      clear(bit);
-      invert(canvas, x, y);
-    });
-  }
-
-  uint8_t bits_[kPixels / 8] = {};
+  SavedPixel saved_[kMaxPixels];
+  int count_ = 0;
   ShapeKind kind_ = ShapeKind::Line;
   Point a_{};
   Point b_{};
+  uint16_t color_ = 0;
   bool active_ = false;
 };
 

@@ -677,10 +677,10 @@ void loop() {
     if (frame.down && frame.y >= paint::config::kTopBarHeight) {
       gShapeKind = shapeKindFor(gUi.tool());
       gShapeStart = clampToCanvas({frame.x, frame.y});
-      gShape.update(gCanvas, gShapeKind, gShapeStart, gShapeStart);
+      gShape.update(gCanvas, gShapeKind, gShapeStart, gShapeStart, gUi.color());
     } else if (gShape.active() && frame.move) {
       gShape.update(gCanvas, gShapeKind, gShapeStart,
-                    clampToCanvas({frame.x, frame.y}));
+                    clampToCanvas({frame.x, frame.y}), gUi.color());
     } else if (gShape.active() && frame.up) {
       gShape.commit(gCanvas, gUndo, gShapeKind, gShapeStart,
                     clampToCanvas({frame.x, frame.y}), gUi.color());
