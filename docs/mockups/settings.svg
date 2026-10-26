@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="480" viewBox="0 0 320 480">
+  <rect width="320" height="480" fill="#0c0c12"/>
+  <rect x="0" y="0" width="320" height="48" fill="#1c1c22"/>
+  <line x1="0" y1="47" x2="320" y2="47" stroke="#404048"/>
+  <rect x="18" y="2" width="44" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+  <path d="M34 30 L44 18 M38 34 L48 22" stroke="#e8e8e8" stroke-width="2" stroke-linecap="round"/>
+  <text x="160" y="29" text-anchor="middle" font-family="monospace" font-size="18" fill="#e8e8e8">Settings</text>
+
+  <g font-family="monospace" font-size="14" fill="#e8e8e8">
+    <rect x="20" y="64" width="280" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+    <text x="30" y="91" fill="#a0a0a8">Rotation</text>
+    <text x="290" y="91" text-anchor="end" fill="#00c8ff">Upright</text>
+
+    <rect x="20" y="116" width="280" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+    <rect x="20" y="116" width="44" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+    <rect x="256" y="116" width="44" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+    <text x="42" y="145" text-anchor="middle" font-size="20">−</text>
+    <text x="278" y="145" text-anchor="middle" font-size="20">+</text>
+    <text x="160" y="143" text-anchor="middle">Brightness 75%</text>
+
+    <rect x="20" y="168" width="280" height="44" rx="3" fill="#30303a" stroke="#00c8ff"/>
+    <text x="30" y="195" fill="#e8e8e8">Wi-Fi &amp; OTA</text>
+    <text x="290" y="195" text-anchor="end" fill="#00c8ff">On</text>
+
+    <rect x="20" y="220" width="136" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+    <text x="88" y="247" text-anchor="middle">Calibrate</text>
+    <rect x="164" y="220" width="136" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+    <text x="232" y="247" text-anchor="middle">Storage</text>
+
+    <rect x="20" y="272" width="136" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+    <text x="88" y="299" text-anchor="middle">About</text>
+    <rect x="164" y="272" width="136" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+    <text x="232" y="299" text-anchor="middle">Wi-Fi info</text>
+  </g>
+
+  <g font-family="monospace" font-size="14">
+    <text x="20" y="342" fill="#e8e8e8">Storage: 1,342 KB free</text>
+    <rect x="20" y="360" width="280" height="16" fill="#262630" stroke="#50505a"/>
+    <rect x="20" y="360" width="96" height="16" fill="#00c8ff"/>
+    <text x="20" y="398" fill="#a0a0a8">Used 34% of 2048 KB</text>
+    <text x="20" y="422" fill="#e8e8e8">OTA reserve: OK</text>
+  </g>
+  <text x="160" y="459" text-anchor="middle" font-family="monospace" font-size="12" fill="#808088">v0.1.0</text>
+</svg>

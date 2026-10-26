@@ -19,13 +19,14 @@ bool loadSettings(Settings& out) {
   }
 
   uint8_t blob[settings_codec::kBlobSize] = {};
+  const size_t expected = file.size();
   const size_t read = file.read(blob, sizeof(blob));
   file.close();
 
-  if (read != sizeof(blob)) {
+  if (read != expected || read < settings_codec::kHeaderSize) {
     return false;
   }
-  return settings_codec::decode(blob, sizeof(blob), out);
+  return settings_codec::decode(blob, read, out);
 }
 
 bool saveSettings(const Settings& settings) {

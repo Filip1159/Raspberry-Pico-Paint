@@ -1,18 +1,29 @@
 #include <unity.h>
 
+#include <cstring>
+
 #include "config.h"
 #include "display/dirty.h"
 #include "input/calibration.h"
+#include "input/orientation.h"
 #include "input/touch_state.h"
 #include "paint/brush.h"
 #include "paint/canvas.h"
+#include "paint/codec_rle.h"
 #include "paint/color.h"
+#include "paint/crc32.h"
 #include "paint/geometry.h"
+#include "paint/pnt.h"
 #include "paint/shapes.h"
 #include "paint/stroke.h"
 #include "paint/undo.h"
+#include "storage/autosave.h"
+#include "storage/boot_health.h"
+#include "storage/paint_files.h"
+#include "storage/storage.h"
 #include "storage/settings_codec.h"
 #include "ui/font5x7.h"
+#include "ui/idle.h"
 #include "ui/ui.h"
 
 using namespace paint;
@@ -346,6 +357,88 @@ static void test_shape_preview_cancel_leaves_no_residue() {
   }
 }
 
+static void test_shape_filled_commit_and_undo() {
+  Canvas canvas = testCanvas();
+  canvas.clear(config::kPaperColor);
+  canvas.clearDirty();
+
+  UndoStack undo;
+  ShapePreview preview;
+
+  // Filled previews show only the boundary, so the interior stays untouched
+  // until commit and cancel never has a large region to restore.
+  preview.update(canvas, ShapeKind::Rect, {40, 100}, {120, 160}, kBlue, true);
+  TEST_ASSERT_TRUE(preview.active());
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(80, 130));
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(40, 130));
+  preview.cancel(canvas);
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(40, 130));
+
+  preview.commit(canvas, undo, ShapeKind::Rect, {40, 100}, {120, 160}, kBlue,
+                 true);
+  TEST_ASSERT_TRUE(undo.commit());
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(80, 130));
+  TEST_ASSERT_EQUAL_HEX16(kBlue, canvas.pixel(40, 130));
+  TEST_ASSERT_TRUE(undo.undo(canvas));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(80, 130));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(40, 130));
+
+  preview.commit(canvas, undo, ShapeKind::Ellipse, {40, 100}, {120, 160}, kRed,
+                 true);
+  TEST_ASSERT_TRUE(undo.commit());
+  TEST_ASSERT_EQUAL_HEX16(kRed, canvas.pixel(80, 130));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(42, 102));
+  TEST_ASSERT_TRUE(undo.undo(canvas));
+  TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(80, 130));
+}
+
+static void test_undo_long_action_tiles() {
+  Canvas canvas = testCanvas();
+  canvas.clear(config::kPaperColor);
+  canvas.clearDirty();
+
+  TEST_ASSERT_TRUE(UndoStack::kMaxTilesPerAction >= 48);
+
+  UndoStack undo;
+  undo.beginAction();
+  constexpr int kTiles = 40;
+  for (int i = 0; i < kTiles; ++i) {
+    const int col = i % UndoStack::kTilesX;
+    const int row = i / UndoStack::kTilesX;
+    const int16_t x = static_cast<int16_t>(col * config::kTileSize + 16);
+    const int16_t y = static_cast<int16_t>(
+        ui_layout::kCanvas.y + row * config::kTileSize + 16);
+    undo.captureRect(canvas, {x, y, 1, 1});
+    canvas.setPixel(x, y, kBlue);
+  }
+  TEST_ASSERT_TRUE(undo.commit());
+  TEST_ASSERT_EQUAL_INT(kTiles, undo.usage().records);
+
+  TEST_ASSERT_TRUE(undo.undo(canvas));
+  for (int i = 0; i < kTiles; ++i) {
+    const int col = i % UndoStack::kTilesX;
+    const int row = i / UndoStack::kTilesX;
+    const int x = col * config::kTileSize + 16;
+    const int y = ui_layout::kCanvas.y + row * config::kTileSize + 16;
+    TEST_ASSERT_EQUAL_HEX16(config::kPaperColor, canvas.pixel(x, y));
+  }
+
+  // One action cannot exceed the per-action cap even though the pool has a
+  // few more records; the overflow flag drives the user-facing toast.
+  undo.beginAction();
+  for (int i = 0; i <= UndoStack::kMaxTilesPerAction; ++i) {
+    const int col = i % UndoStack::kTilesX;
+    const int row = i / UndoStack::kTilesX;
+    const int16_t x = static_cast<int16_t>(col * config::kTileSize + 16);
+    const int16_t y = static_cast<int16_t>(
+        ui_layout::kCanvas.y + row * config::kTileSize + 16);
+    undo.captureRect(canvas, {x, y, 1, 1});
+    canvas.setPixel(x, y, kRed);
+  }
+  TEST_ASSERT_FALSE(undo.commit());
+  TEST_ASSERT_TRUE(undo.takeOverflow());
+}
+
 static void test_shape_commit_rect_and_ellipse_undo() {
   Canvas canvas = testCanvas();
   canvas.clear(config::kPaperColor);
@@ -669,6 +762,413 @@ static void test_ui_new_canvas_confirmation_flow() {
   TEST_ASSERT_FALSE(ui.takeNewCanvasRequest());
 }
 
+static void uiLongPress(Ui& ui, int x, int y, uint32_t nowMs) {
+  TouchFrame down;
+  down.pressed = true;
+  down.down = true;
+  down.x = static_cast<int16_t>(x);
+  down.y = static_cast<int16_t>(y);
+  down.startX = down.x;
+  down.startY = down.y;
+  ui.update(down, nowMs);
+
+  TouchFrame hold = down;
+  hold.down = false;
+  hold.longPress = true;
+  ui.update(hold, nowMs + 700);
+
+  TouchFrame up;
+  up.up = true;
+  up.x = down.x;
+  up.y = down.y;
+  up.startX = down.x;
+  up.startY = down.y;
+  up.durationMs = 740;
+  ui.update(up, nowMs + 740);
+}
+
+static void test_ui_save_and_save_as_flow() {
+  Ui ui;
+  ui.begin(0);
+  ui.update(TouchFrame{}, 900);
+
+  // Save with no current document asks the main loop for a free name.
+  uiTap(ui, 280, 24, 1000);
+  uiTap(ui, 160, 238, 1200);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::None),
+                        static_cast<int>(ui.sheet()));
+  TEST_ASSERT_TRUE(ui.takeSaveAsRequest());
+  TEST_ASSERT_FALSE(ui.takeSaveAsRequest());
+
+  ui.promptSaveAs("img0007.pnt");
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::SaveAs),
+                        static_cast<int>(ui.sheet()));
+  uiTap(ui, 233, 426, 1400);
+
+  char name[kPaintFileNameSize];
+  TEST_ASSERT_TRUE(ui.takeSaveRequest(name, sizeof(name)));
+  TEST_ASSERT_EQUAL_STRING("img0007.pnt", name);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::None),
+                        static_cast<int>(ui.sheet()));
+
+  // Once the document has a name, Save writes it directly.
+  ui.setDocument("img0007.pnt", false);
+  uiTap(ui, 280, 24, 1600);
+  uiTap(ui, 160, 238, 1800);
+  TEST_ASSERT_TRUE(ui.takeSaveRequest(name, sizeof(name)));
+  TEST_ASSERT_EQUAL_STRING("img0007.pnt", name);
+  TEST_ASSERT_FALSE(ui.takeSaveAsRequest());
+
+  // Save as always asks for a new name.
+  uiTap(ui, 280, 24, 2000);
+  uiTap(ui, 160, 278, 2200);
+  TEST_ASSERT_TRUE(ui.takeSaveAsRequest());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::None),
+                        static_cast<int>(ui.sheet()));
+}
+
+static void test_ui_gallery_load_delete_and_paging() {
+  static const char* const kNames[5] = {
+      "img0001.pnt", "img0002.pnt", "img0003.pnt", "img0004.pnt",
+      "img0005.pnt",
+  };
+
+  Ui ui;
+  ui.begin(0);
+  ui.update(TouchFrame{}, 900);
+  ui.setGalleryFiles(kNames, 5);
+  TEST_ASSERT_EQUAL_INT(5, ui.galleryCount());
+  TEST_ASSERT_EQUAL_INT(2, ui.galleryPageCount());
+  ui.setDocument("img0001.pnt", true);
+
+  uiTap(ui, 280, 24, 1000);
+  uiTap(ui, 160, 318, 1200);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Gallery),
+                        static_cast<int>(ui.screen()));
+  TEST_ASSERT_EQUAL_INT(0, ui.galleryPage());
+
+  // A tap asks for confirmation before discarding the canvas.
+  uiTap(ui, 85, 160, 1400);
+  TEST_ASSERT_TRUE(ui.galleryDialogOpen());
+  TEST_ASSERT_FALSE(ui.takeLoadRequest(nullptr, 0));
+  uiTap(ui, 87, 390, 1600);
+  TEST_ASSERT_FALSE(ui.galleryDialogOpen());
+
+  uiTap(ui, 85, 160, 1800);
+  uiTap(ui, 233, 390, 2000);
+  char name[kPaintFileNameSize];
+  TEST_ASSERT_TRUE(ui.takeLoadRequest(name, sizeof(name)));
+  TEST_ASSERT_EQUAL_STRING("img0001.pnt", name);
+  TEST_ASSERT_FALSE(ui.galleryDialogOpen());
+
+  // Long press opens the destructive confirmation; cancel keeps the file.
+  uiLongPress(ui, 235, 160, 2200);
+  TEST_ASSERT_TRUE(ui.galleryDialogOpen());
+  uiTap(ui, 87, 390, 3000);
+  TEST_ASSERT_FALSE(ui.galleryDialogOpen());
+  TEST_ASSERT_FALSE(ui.takeDeleteRequest(name, sizeof(name)));
+
+  uiLongPress(ui, 235, 160, 3200);
+  uiTap(ui, 233, 390, 4000);
+  TEST_ASSERT_TRUE(ui.takeDeleteRequest(name, sizeof(name)));
+  TEST_ASSERT_EQUAL_STRING("img0002.pnt", name);
+
+  // Five files need two pages.
+  uiTap(ui, 278, 454, 4200);
+  TEST_ASSERT_EQUAL_INT(1, ui.galleryPage());
+  uiTap(ui, 42, 454, 4400);
+  TEST_ASSERT_EQUAL_INT(0, ui.galleryPage());
+
+  uiTap(ui, 40, 24, 4600);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Canvas),
+                        static_cast<int>(ui.screen()));
+}
+
+static void test_ui_storage_details_screen() {
+  Ui ui;
+  ui.begin(0);
+  ui.update(TouchFrame{}, 900);
+
+  uiTap(ui, 280, 24, 1000);
+  uiTap(ui, 160, 358, 1200);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Settings),
+                        static_cast<int>(ui.screen()));
+
+  uiTap(ui, ui_layout::kStorageDetailsButton.x +
+                 ui_layout::kStorageDetailsButton.w / 2,
+        ui_layout::kStorageDetailsButton.y +
+            ui_layout::kStorageDetailsButton.h / 2,
+        1400);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Storage),
+                        static_cast<int>(ui.screen()));
+
+  uiTap(ui, 40, 24, 1600);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Settings),
+                        static_cast<int>(ui.screen()));
+
+  uiTap(ui, 40, 24, 1800);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Canvas),
+                        static_cast<int>(ui.screen()));
+}
+
+static void test_ui_network_screen_flow() {
+  TEST_ASSERT_TRUE(ui_layout::kNetworkInfoArea.bottom() <
+                   ui_layout::kNetworkToggleButton.y);
+  TEST_ASSERT_TRUE(ui_layout::kNetworkToggleButton.bottom() <=
+                   config::kScreenHeight);
+  TEST_ASSERT_TRUE(ui_layout::kOtaPanel.bottom() <
+                   ui_layout::kNetworkToggleButton.y);
+  TEST_ASSERT_TRUE(ui_layout::kOtaProgressBar.bottom() <=
+                   ui_layout::kOtaPanel.bottom());
+  TEST_ASSERT_TRUE(ui_layout::kScreen.contains(
+      {ui_layout::kNetworkToggleButton.x,
+       static_cast<int16_t>(ui_layout::kNetworkToggleButton.y + 1)}));
+
+  Ui ui;
+  ui.begin(0);
+  ui.update(TouchFrame{}, 900);
+
+  uiTap(ui, 280, 24, 1000);
+  uiTap(ui, 160, 398, 1200);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Network),
+                        static_cast<int>(ui.screen()));
+  TEST_ASSERT_FALSE(ui.takeNetworkToggleRequest());
+
+  NetInfo info;
+  info.enabled = true;
+  info.configured = false;
+  info.state = NetState::Disabled;
+  ui.setNetworkInfo(info);
+  uiTap(ui, ui_layout::kNetworkToggleButton.x +
+                 ui_layout::kNetworkToggleButton.w / 2,
+        ui_layout::kNetworkToggleButton.y +
+            ui_layout::kNetworkToggleButton.h / 2,
+        1400);
+  TEST_ASSERT_FALSE(ui.takeNetworkToggleRequest());
+
+  info.configured = true;
+  info.state = NetState::Connected;
+  info.server = true;
+  info.ip[0] = 192;
+  info.ip[1] = 168;
+  info.ip[2] = 1;
+  info.ip[3] = 42;
+  info.rssi = -55;
+  ui.setNetworkInfo(info);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(NetState::Connected),
+                        static_cast<int>(ui.networkInfo().state));
+  TEST_ASSERT_TRUE(ui.networkInfo().hasIp());
+  uiTap(ui, ui_layout::kNetworkToggleButton.x +
+                 ui_layout::kNetworkToggleButton.w / 2,
+        ui_layout::kNetworkToggleButton.y +
+            ui_layout::kNetworkToggleButton.h / 2,
+        1600);
+  TEST_ASSERT_TRUE(ui.takeNetworkToggleRequest());
+  TEST_ASSERT_FALSE(ui.takeNetworkToggleRequest());
+
+  info.enabled = false;
+  info.state = NetState::Offline;
+  info.lowStorage = true;
+  info.server = false;
+  ui.setNetworkInfo(info);
+  uiTap(ui, ui_layout::kNetworkToggleButton.x +
+                 ui_layout::kNetworkToggleButton.w / 2,
+        ui_layout::kNetworkToggleButton.y +
+            ui_layout::kNetworkToggleButton.h / 2,
+        1800);
+  TEST_ASSERT_FALSE(ui.takeNetworkToggleRequest());
+
+  ui.beginOta();
+  TEST_ASSERT_TRUE(ui.otaActive());
+  TEST_ASSERT_TRUE(ui.setOtaProgress(10));
+  TEST_ASSERT_FALSE(ui.setOtaProgress(10));
+  TEST_ASSERT_TRUE(ui.setOtaProgress(100));
+  ui.endOta();
+  TEST_ASSERT_FALSE(ui.otaActive());
+
+  uiTap(ui, 40, 24, 2000);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Canvas),
+                        static_cast<int>(ui.screen()));
+}
+
+static void test_ui_gallery_empty_and_file_names() {
+  char name[kPaintFileNameSize];
+  char path[32];
+  TEST_ASSERT_TRUE(paintFileNameForNumber(1, name, sizeof(name)));
+  TEST_ASSERT_EQUAL_STRING("img0001.pnt", name);
+  TEST_ASSERT_TRUE(paintFileNameForNumber(9999, name, sizeof(name)));
+  TEST_ASSERT_EQUAL_STRING("img9999.pnt", name);
+  TEST_ASSERT_FALSE(paintFileNameForNumber(0, name, sizeof(name)));
+  TEST_ASSERT_FALSE(paintFileNameForNumber(10000, name, sizeof(name)));
+  TEST_ASSERT_FALSE(paintFileNameForNumber(1, name, 8));
+
+  TEST_ASSERT_TRUE(isPntFileName("img0001.pnt"));
+  TEST_ASSERT_TRUE(isPntFileName("sketch.pnt"));
+  TEST_ASSERT_TRUE(isAutosaveFileName("autosave.pnt"));
+  TEST_ASSERT_FALSE(isAutosaveFileName("img0001.pnt"));
+  TEST_ASSERT_EQUAL_STRING("/paint/autosave.pnt", kAutosavePath);
+  TEST_ASSERT_FALSE(isPntFileName("img0001.tmp"));
+  TEST_ASSERT_FALSE(isPntFileName("/paint/img0001.pnt"));
+  TEST_ASSERT_FALSE(isPntFileName(""));
+
+  TEST_ASSERT_EQUAL_INT(42, paintFileNumber("img0042.pnt"));
+  TEST_ASSERT_EQUAL_INT(-1, paintFileNumber("img0000.pnt"));
+  TEST_ASSERT_EQUAL_INT(-1, paintFileNumber("img00a2.pnt"));
+  TEST_ASSERT_EQUAL_INT(-1, paintFileNumber("img0042.tmp"));
+
+  TEST_ASSERT_TRUE(paintFilePath("img0001.pnt", path, sizeof(path)));
+  TEST_ASSERT_EQUAL_STRING("/paint/img0001.pnt", path);
+  TEST_ASSERT_FALSE(paintFilePath("a/img0001.pnt", path, sizeof(path)));
+  TEST_ASSERT_FALSE(paintFilePath("", path, sizeof(path)));
+  TEST_ASSERT_FALSE(paintFilePath("img0001.pnt", path, 8));
+
+  TEST_ASSERT_EQUAL_INT(1, ui_layout::galleryPageCount(0));
+  TEST_ASSERT_EQUAL_INT(1, ui_layout::galleryPageCount(4));
+  TEST_ASSERT_EQUAL_INT(2, ui_layout::galleryPageCount(5));
+  for (int i = 0; i < ui_layout::kGalleryPerPage; ++i) {
+    const Rect r = ui_layout::kGalleryItems[i];
+    TEST_ASSERT_TRUE(ui_layout::kScreen.contains({r.x, r.y}));
+    TEST_ASSERT_TRUE(ui_layout::kScreen.contains(
+        {static_cast<int16_t>(r.right() - 1),
+         static_cast<int16_t>(r.bottom() - 1)}));
+    TEST_ASSERT_EQUAL_INT(i, ui_layout::hitGalleryItem(
+                                 {static_cast<int16_t>(r.x + 1),
+                                  static_cast<int16_t>(r.y + 1)}));
+  }
+  TEST_ASSERT_EQUAL_INT(-1, ui_layout::hitGalleryItem({0, 0}));
+  TEST_ASSERT_TRUE(ui_layout::kGalleryPrev.bottom() <=
+                   config::kScreenHeight);
+  TEST_ASSERT_TRUE(ui_layout::kRecoveryRestore.bottom() <=
+                   ui_layout::kRecoveryPanel.bottom());
+  TEST_ASSERT_TRUE(ui_layout::kRecoveryDiscard.bottom() <=
+                   ui_layout::kRecoveryPanel.bottom());
+  TEST_ASSERT_TRUE(ui_layout::kRecoveryRestore.right() <
+                   ui_layout::kRecoveryDiscard.x);
+
+  Ui ui;
+  ui.begin(0);
+  ui.update(TouchFrame{}, 900);
+  ui.setGalleryFiles(nullptr, 0);
+  uiTap(ui, 280, 24, 1000);
+  uiTap(ui, 160, 318, 1200);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Gallery),
+                        static_cast<int>(ui.screen()));
+  TEST_ASSERT_EQUAL_INT(0, ui.galleryCount());
+  TEST_ASSERT_EQUAL_INT(1, ui.galleryPageCount());
+  uiLongPress(ui, 85, 160, 1400);
+  TEST_ASSERT_FALSE(ui.galleryDialogOpen());
+}
+
+static void test_autosave_timer_schedule() {
+  AutosaveTimer timer;
+  TEST_ASSERT_FALSE(timer.pending());
+  TEST_ASSERT_FALSE(timer.due(0));
+
+  timer.changed(1000);
+  TEST_ASSERT_TRUE(timer.pending());
+  TEST_ASSERT_FALSE(timer.due(15999));
+  TEST_ASSERT_TRUE(timer.due(16000));
+
+  // Drawing again while armed must not postpone the first deadline.
+  timer.changed(12000);
+  TEST_ASSERT_FALSE(timer.due(15999));
+  TEST_ASSERT_TRUE(timer.due(16000));
+
+  timer.saved();
+  TEST_ASSERT_FALSE(timer.pending());
+  TEST_ASSERT_FALSE(timer.due(20000));
+
+  timer.changed(17000);
+  TEST_ASSERT_FALSE(timer.due(31999));
+  TEST_ASSERT_TRUE(timer.due(32000));
+  timer.retry(32000);
+  TEST_ASSERT_FALSE(timer.due(46999));
+  TEST_ASSERT_TRUE(timer.due(47000));
+
+  timer.reset();
+  TEST_ASSERT_FALSE(timer.pending());
+  TEST_ASSERT_FALSE(timer.due(99999));
+
+  AutosaveTimer wrapped;
+  wrapped.changed(0xFFFFFFF0u);
+  TEST_ASSERT_FALSE(wrapped.due(14983));
+  TEST_ASSERT_TRUE(wrapped.due(14984));
+}
+
+static void test_storage_space_and_ota_headroom() {
+  constexpr size_t kTwoMb = 2u * 1024u * 1024u;
+  StorageStats stats = makeStorageStats(kTwoMb, 512u * 1024u);
+  TEST_ASSERT_EQUAL_size_t(kTwoMb, stats.totalBytes);
+  TEST_ASSERT_EQUAL_size_t(512u * 1024u, stats.usedBytes);
+  TEST_ASSERT_EQUAL_size_t(kTwoMb - 512u * 1024u, stats.freeBytes);
+  TEST_ASSERT_EQUAL_UINT8(25, stats.usedPercent());
+  TEST_ASSERT_TRUE(stats.otaHeadroom());
+
+  stats = makeStorageStats(kTwoMb, kTwoMb - kOtaHeadroomBytes);
+  TEST_ASSERT_EQUAL_size_t(kOtaHeadroomBytes, stats.freeBytes);
+  TEST_ASSERT_TRUE(stats.otaHeadroom());
+
+  stats = makeStorageStats(kTwoMb, kTwoMb - kOtaHeadroomBytes + 1);
+  TEST_ASSERT_FALSE(stats.otaHeadroom());
+
+  stats = makeStorageStats(1000, 2000);
+  TEST_ASSERT_EQUAL_size_t(1000, stats.usedBytes);
+  TEST_ASSERT_EQUAL_size_t(0, stats.freeBytes);
+  TEST_ASSERT_EQUAL_UINT8(100, stats.usedPercent());
+  TEST_ASSERT_FALSE(stats.otaHeadroom());
+
+  stats = makeStorageStats(0, 0);
+  TEST_ASSERT_EQUAL_UINT8(0, stats.usedPercent());
+  TEST_ASSERT_FALSE(stats.otaHeadroom());
+
+  Ui ui;
+  ui.begin(0);
+  ui.setStorageStats(makeStorageStats(kTwoMb, kTwoMb - kOtaHeadroomBytes));
+  TEST_ASSERT_TRUE(ui.hasOtaHeadroom());
+  ui.setStorageStats(makeStorageStats(kTwoMb, kTwoMb - kOtaHeadroomBytes + 1));
+  TEST_ASSERT_FALSE(ui.hasOtaHeadroom());
+}
+
+static void test_ui_boot_recovery_prompt() {
+  Ui restore;
+  restore.begin(0);
+  restore.setRecoveryAvailable(true);
+  restore.update(TouchFrame{}, 900);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Recovery),
+                        static_cast<int>(restore.screen()));
+
+  // Recovery is modal until Restore or Discard is tapped.
+  uiTap(restore, 40, 24, 1000);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Recovery),
+                        static_cast<int>(restore.screen()));
+  uiTap(restore, 87, 338, 1200);
+  TEST_ASSERT_TRUE(restore.takeRecoveryRestoreRequest());
+  TEST_ASSERT_FALSE(restore.takeRecoveryRestoreRequest());
+  TEST_ASSERT_FALSE(restore.takeRecoveryDiscardRequest());
+  restore.showCanvas();
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Canvas),
+                        static_cast<int>(restore.screen()));
+
+  Ui discard;
+  discard.begin(0);
+  discard.setRecoveryAvailable(true);
+  discard.update(TouchFrame{}, 900);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Recovery),
+                        static_cast<int>(discard.screen()));
+  uiTap(discard, 233, 338, 1000);
+  TEST_ASSERT_TRUE(discard.takeRecoveryDiscardRequest());
+  TEST_ASSERT_FALSE(discard.takeRecoveryRestoreRequest());
+  discard.showCanvas();
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Canvas),
+                        static_cast<int>(discard.screen()));
+
+  Ui normal;
+  normal.begin(0);
+  normal.update(TouchFrame{}, 900);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Canvas),
+                        static_cast<int>(normal.screen()));
+}
+
 static void test_ui_hsv_picker_flow() {
   Ui ui;
   ui.begin(0);
@@ -715,9 +1215,10 @@ static void test_ui_hsv_tap_dirty_bounds() {
 
   ui.clearDirty();
   uiTap(ui, 200, 234, 1400);  // hue bar
-  TEST_ASSERT_EQUAL_INT(4, ui.dirtyCount());
+  TEST_ASSERT_EQUAL_INT(5, ui.dirtyCount());
   for (int i = 0; i < ui.dirtyCount(); ++i) {
     const Rect r = ui.dirtyRect(i);
+    TEST_ASSERT_FALSE(r == ui_layout::kHsvHuePaint);
     TEST_ASSERT_TRUE(r.w < ui_layout::kSheetHsv.w ||
                      r.h < ui_layout::kSheetHsv.h);
     TEST_ASSERT_TRUE(ui_layout::kSheetHsv.contains({r.x, r.y}));
@@ -728,7 +1229,59 @@ static void test_ui_hsv_tap_dirty_bounds() {
 
   ui.clearDirty();
   uiTap(ui, 200, 330, 1600);  // saturation/value square
-  TEST_ASSERT_EQUAL_INT(3, ui.dirtyCount());
+  TEST_ASSERT_EQUAL_INT(4, ui.dirtyCount());
+  for (int i = 0; i < ui.dirtyCount(); ++i) {
+    const Rect r = ui.dirtyRect(i);
+    TEST_ASSERT_FALSE(r == ui_layout::kHsvSquarePaint);
+    TEST_ASSERT_TRUE((r.w <= 21 && r.h <= 21) ||
+                     r == ui_layout::kHsvPreview ||
+                     r == ui_layout::kHsvReadout);
+  }
+}
+
+static void test_ui_tool_options_and_shape_fill() {
+  Ui ui;
+  ui.begin(0);
+  ui.update(TouchFrame{}, 900);
+
+  uiTap(ui, 40, 24, 1000);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::Tools),
+                        static_cast<int>(ui.sheet()));
+  TEST_ASSERT_EQUAL_INT(0, ui_layout::hitToolOption({60, 450}));
+  TEST_ASSERT_EQUAL_INT(1, ui_layout::hitToolOption({150, 450}));
+  TEST_ASSERT_EQUAL_INT(2, ui_layout::hitToolOption({240, 450}));
+  TEST_ASSERT_EQUAL_INT(-1, ui_layout::hitToolOption({100, 410}));
+
+  // Select Rect (index 3), then toggle filled/outline from the options row.
+  uiTap(ui, 64, 362, 1200);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::None),
+                        static_cast<int>(ui.sheet()));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Tool::Rect),
+                        static_cast<int>(ui.tool()));
+  TEST_ASSERT_FALSE(ui.shapeFilled());
+
+  uiTap(ui, 40, 24, 1400);
+  uiTap(ui, 260, 454, 1600);
+  TEST_ASSERT_TRUE(ui.shapeFilled());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::Tools),
+                        static_cast<int>(ui.sheet()));
+  uiTap(ui, 164, 454, 1800);
+  TEST_ASSERT_FALSE(ui.shapeFilled());
+
+  // The size entry point opens the existing size sheet.
+  uiTap(ui, 64, 454, 2000);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::Size),
+                        static_cast<int>(ui.sheet()));
+
+  // Outline/filled is meaningless for the brush; tapping it must not change
+  // the mode or close the sheet.
+  uiTap(ui, 40, 24, 2200);
+  uiTap(ui, 86, 310, 2400);  // Brush
+  uiTap(ui, 40, 24, 2600);
+  uiTap(ui, 260, 454, 2800);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Sheet::Tools),
+                        static_cast<int>(ui.sheet()));
+  TEST_ASSERT_FALSE(ui.shapeFilled());
 }
 
 static void test_ui_undo_requests_and_availability() {
@@ -828,7 +1381,9 @@ static void test_settings_codec_round_trip() {
   source.rotation = 2;
   source.brightness = 173;
   source.otaEnabled = false;
+  source.flags = 0xA5;
   source.calibration = panelCalibration();
+  std::strcpy(source.lastOpened, "img0012.pnt");
 
   uint8_t blob[settings_codec::kBlobSize] = {};
   settings_codec::encode(source, blob);
@@ -838,6 +1393,8 @@ static void test_settings_codec_round_trip() {
   TEST_ASSERT_EQUAL_INT(source.rotation, decoded.rotation);
   TEST_ASSERT_EQUAL_INT(source.brightness, decoded.brightness);
   TEST_ASSERT_EQUAL_INT(source.otaEnabled, decoded.otaEnabled);
+  TEST_ASSERT_EQUAL_INT(source.flags, decoded.flags);
+  TEST_ASSERT_EQUAL_STRING(source.lastOpened, decoded.lastOpened);
   TEST_ASSERT_EQUAL_INT(source.calibration.a, decoded.calibration.a);
   TEST_ASSERT_EQUAL_INT(source.calibration.b, decoded.calibration.b);
   TEST_ASSERT_EQUAL_INT(source.calibration.c, decoded.calibration.c);
@@ -848,6 +1405,59 @@ static void test_settings_codec_round_trip() {
   blob[8] ^= 0x01;
   TEST_ASSERT_FALSE(settings_codec::decode(blob, sizeof(blob), decoded));
   TEST_ASSERT_FALSE(settings_codec::decode(blob, sizeof(blob) - 1, decoded));
+}
+
+static void test_settings_codec_v1_migration() {
+  uint8_t blob[settings_codec::kHeaderSize + settings_codec::kPayloadSize1] = {};
+  uint8_t* payload = blob + settings_codec::kHeaderSize;
+  payload[0] = 2;
+  payload[1] = 200;
+  payload[2] = 1;
+  payload[3] = 0;
+  const uint32_t coefficients[6] = {0x00010000u, 0u, 10u, 0u,
+                                    0x0000F000u, 20u};
+  for (int i = 0; i < 6; ++i) {
+    settings_codec::writeU32(payload + 4 + i * 4, coefficients[i]);
+  }
+  settings_codec::writeU32(blob, settings_codec::kMagic);
+  settings_codec::writeU16(blob + 4, settings_codec::kVersion1);
+  settings_codec::writeU16(blob + 6,
+                           static_cast<uint16_t>(settings_codec::kPayloadSize1));
+  settings_codec::writeU32(
+      blob + 8, settings_codec::checksum(payload, settings_codec::kPayloadSize1));
+
+  Settings decoded;
+  TEST_ASSERT_TRUE(settings_codec::decode(blob, sizeof(blob), decoded));
+  TEST_ASSERT_EQUAL_INT(2, decoded.rotation);
+  TEST_ASSERT_EQUAL_INT(200, decoded.brightness);
+  TEST_ASSERT_TRUE(decoded.otaEnabled);
+  TEST_ASSERT_EQUAL_INT(0, decoded.flags);
+  TEST_ASSERT_EQUAL_STRING("", decoded.lastOpened);
+  TEST_ASSERT_EQUAL_HEX32(0x00010000u,
+                          static_cast<uint32_t>(decoded.calibration.a));
+  TEST_ASSERT_EQUAL_HEX32(0x0000F000u,
+                          static_cast<uint32_t>(decoded.calibration.e));
+
+  // A v1 payload with a trailing byte is not a valid blob.
+  TEST_ASSERT_FALSE(
+      settings_codec::decode(blob, sizeof(blob) - 1, decoded));
+}
+
+static void test_settings_codec_rejects_invalid_last_opened() {
+  Settings source;
+  source.calibration = panelCalibration();
+  std::strcpy(source.lastOpened, "bad/name.pnt");
+
+  uint8_t blob[settings_codec::kBlobSize] = {};
+  settings_codec::encode(source, blob);
+  Settings decoded;
+  TEST_ASSERT_TRUE(settings_codec::decode(blob, sizeof(blob), decoded));
+  TEST_ASSERT_EQUAL_STRING("", decoded.lastOpened);
+
+  std::strcpy(source.lastOpened, kAutosaveFileName);
+  settings_codec::encode(source, blob);
+  TEST_ASSERT_TRUE(settings_codec::decode(blob, sizeof(blob), decoded));
+  TEST_ASSERT_EQUAL_STRING("", decoded.lastOpened);
 }
 
 static TouchPoint touchSample(int16_t x, int16_t y, bool pressed) {
@@ -1021,9 +1631,19 @@ static void test_ui_layout_canvas_and_sheets() {
                         ui_layout::kCanvas.h);
   TEST_ASSERT_EQUAL_INT(config::kScreenHeight, ui_layout::kCanvas.bottom());
 
+  Point clamped = ui_layout::clampCanvasPoint({-5, 10});
+  TEST_ASSERT_EQUAL_INT(0, clamped.x);
+  TEST_ASSERT_EQUAL_INT(config::kTopBarHeight, clamped.y);
+  clamped = ui_layout::clampCanvasPoint({999, 999});
+  TEST_ASSERT_EQUAL_INT(config::kScreenWidth - 1, clamped.x);
+  TEST_ASSERT_EQUAL_INT(config::kScreenHeight - 1, clamped.y);
+  clamped = ui_layout::clampCanvasPoint({160, 240});
+  TEST_ASSERT_EQUAL_INT(160, clamped.x);
+  TEST_ASSERT_EQUAL_INT(240, clamped.y);
+
   TEST_ASSERT_TRUE(ui_layout::sheetRect(Sheet::None).empty());
-  TEST_ASSERT_EQUAL_INT(300, ui_layout::kSheetTools.y);
-  TEST_ASSERT_EQUAL_INT(180, ui_layout::kSheetTools.h);
+  TEST_ASSERT_EQUAL_INT(260, ui_layout::kSheetTools.y);
+  TEST_ASSERT_EQUAL_INT(220, ui_layout::kSheetTools.h);
   TEST_ASSERT_EQUAL_INT(260, ui_layout::kSheetPalette.y);
   TEST_ASSERT_EQUAL_INT(220, ui_layout::kSheetPalette.h);
   TEST_ASSERT_EQUAL_INT(360, ui_layout::kSheetSize.y);
@@ -1051,8 +1671,21 @@ static void test_ui_layout_sheet_buttons() {
 static void test_ui_layout_calibration() {
   TEST_ASSERT_TRUE(ui_layout::kCalibrateButton.bottom() <= config::kScreenHeight);
   TEST_ASSERT_TRUE(ui_layout::kCalibrationCancel.bottom() <= config::kScreenHeight);
-  TEST_ASSERT_TRUE(ui_layout::kCalibrateButton.contains({20, 268}));
+  TEST_ASSERT_TRUE(ui_layout::kCalibrateButton.contains(
+      {20, static_cast<int16_t>(ui_layout::kCalibrateButton.y + 1)}));
   TEST_ASSERT_TRUE(ui_layout::kCalibrationCancel.contains({120, 440}));
+  TEST_ASSERT_TRUE(ui_layout::kStorageGaugeArea.contains(
+      {ui_layout::kStorageBar.x, ui_layout::kStorageBar.y}));
+  TEST_ASSERT_TRUE(ui_layout::kStorageGaugeArea.contains(
+      {ui_layout::kStorageBar.right() - 1, ui_layout::kStorageBar.bottom() - 1}));
+  TEST_ASSERT_TRUE(ui_layout::kStorageBar.y >
+                   ui_layout::kStorageDetailsButton.bottom());
+  TEST_ASSERT_TRUE(ui_layout::kStorageDetailsButton.bottom() <=
+                   config::kScreenHeight);
+  TEST_ASSERT_EQUAL_INT(ui_layout::kCalibrateButton.y,
+                        ui_layout::kStorageDetailsButton.y);
+  TEST_ASSERT_TRUE(ui_layout::kCalibrateButton.h >= 44);
+  TEST_ASSERT_TRUE(ui_layout::kStorageDetailsButton.h >= 44);
 
   TEST_ASSERT_EQUAL_INT(28, ui_layout::calibrationTarget(0).x);
   TEST_ASSERT_EQUAL_INT(96, ui_layout::calibrationTarget(0).y);
@@ -1064,9 +1697,20 @@ static void test_ui_layout_calibration() {
 }
 
 static void test_ui_layout_sheet_hits() {
-  TEST_ASSERT_EQUAL_INT(0, ui_layout::hitSheetItem(Sheet::Tools, {86, 353}));
-  TEST_ASSERT_EQUAL_INT(6, ui_layout::hitSheetItem(Sheet::Tools, {86, 461}));
+  TEST_ASSERT_EQUAL_INT(0, ui_layout::hitSheetItem(Sheet::Tools, {86, 310}));
+  TEST_ASSERT_EQUAL_INT(6, ui_layout::hitSheetItem(Sheet::Tools, {86, 410}));
+  TEST_ASSERT_EQUAL_INT(-1, ui_layout::hitSheetItem(Sheet::Tools, {86, 454}));
   TEST_ASSERT_EQUAL_INT(-1, ui_layout::hitSheetItem(Sheet::Tools, {86, 480}));
+  const Rect optionRects[3] = {ui_layout::kToolsSizeButton,
+                               ui_layout::kToolsOutlineButton,
+                               ui_layout::kToolsFilledButton};
+  for (const Rect& r : optionRects) {
+    TEST_ASSERT_TRUE(ui_layout::kSheetTools.contains({r.x, r.y}));
+    TEST_ASSERT_TRUE(ui_layout::kSheetTools.contains(
+        {static_cast<int16_t>(r.right() - 1),
+         static_cast<int16_t>(r.bottom() - 1)}));
+    TEST_ASSERT_TRUE(ui_layout::kToolsOptionsRow.contains({r.x, r.y}));
+  }
 
   TEST_ASSERT_EQUAL_INT(0, ui_layout::hitSheetItem(Sheet::Palette, {50, 318}));
   TEST_ASSERT_EQUAL_INT(23, ui_layout::hitSheetItem(Sheet::Palette, {270, 450}));
@@ -1077,8 +1721,621 @@ static void test_ui_layout_sheet_hits() {
   TEST_ASSERT_EQUAL_INT(6, ui_layout::hitSheetItem(Sheet::Size, {280, 428}));
 
   TEST_ASSERT_EQUAL_INT(0, ui_layout::hitSheetItem(Sheet::Menu, {160, 198}));
-  TEST_ASSERT_EQUAL_INT(5, ui_layout::hitSheetItem(Sheet::Menu, {160, 418}));
-  TEST_ASSERT_EQUAL_INT(-1, ui_layout::hitSheetItem(Sheet::Menu, {160, 440}));
+  TEST_ASSERT_EQUAL_INT(6, ui_layout::hitSheetItem(Sheet::Menu, {160, 438}));
+  TEST_ASSERT_EQUAL_INT(6, ui_layout::hitSheetItem(Sheet::Menu, {160, 470}));
+  TEST_ASSERT_TRUE(ui_layout::menuItemRect(6).bottom() <=
+                   ui_layout::kSheetMenu.bottom());
+}
+
+namespace {
+
+constexpr size_t kStorageCanvasWidth = 320;
+constexpr size_t kStorageCanvasHeight = 432;
+constexpr size_t kStorageCanvasPixels = kStorageCanvasWidth * kStorageCanvasHeight;
+// Worst case is roughly two bytes per pixel plus a token per row, plus the
+// thumbnail and header.
+constexpr size_t kMaxPntBytes = 300000;
+
+uint16_t gPntSource[kStorageCanvasPixels];
+uint16_t gPntDecoded[kStorageCanvasPixels];
+uint8_t gPntFile[kMaxPntBytes];
+
+uint16_t pntPattern(size_t index) {
+  if ((index / 31) % 4 == 0) {
+    return 0x1234;
+  }
+  if ((index / 7) % 5 == 0) {
+    return 0xABCD;
+  }
+  const uint32_t mixed = static_cast<uint32_t>(index) * 2654435761u + 0x9E3779B9u;
+  return static_cast<uint16_t>(mixed >> 16);
+}
+
+void fillPntPattern(uint16_t* pixels, size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    pixels[i] = pntPattern(i);
+  }
+}
+
+}  // namespace
+
+static void test_crc32_known_vectors() {
+  const uint8_t text[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
+  TEST_ASSERT_EQUAL_HEX32(0x00000000u, crc32(nullptr, 0));
+  TEST_ASSERT_EQUAL_HEX32(0xCBF43926u, crc32(text, sizeof(text)));
+
+  const uint8_t zeroes[4] = {0, 0, 0, 0};
+  TEST_ASSERT_EQUAL_HEX32(0x2144DF1Cu, crc32(zeroes, sizeof(zeroes)));
+}
+
+static void test_crc32_incremental_matches_oneshot() {
+  const uint8_t text[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
+  uint32_t state = 0;
+  state = crc32Update(state, text, 4);
+  state = crc32Update(state, text + 4, 5);
+  TEST_ASSERT_EQUAL_HEX32(crc32(text, sizeof(text)), state);
+}
+
+static void test_rle_round_trip_runs_and_literals() {
+  const uint16_t source[] = {0x1111, 0x1111, 0x1111, 0x2222, 0x3333, 0x4444,
+                             0x4444, 0x5555, 0x6666, 0x7777, 0x7777, 0x7777};
+  constexpr size_t count = sizeof(source) / sizeof(source[0]);
+  uint8_t encoded[64] = {};
+  uint16_t decoded[count] = {};
+
+  const size_t length = rleEncode(source, count, encoded, sizeof(encoded));
+  TEST_ASSERT_GREATER_THAN_UINT32(0, static_cast<uint32_t>(length));
+  TEST_ASSERT_TRUE(rleValidate(encoded, length, count));
+  TEST_ASSERT_TRUE(rleDecode(encoded, length, decoded, count));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(reinterpret_cast<const uint8_t*>(source),
+                                reinterpret_cast<const uint8_t*>(decoded),
+                                sizeof(source));
+}
+
+static void test_rle_encodes_worst_case_within_bound() {
+  uint16_t source[1000];
+  for (size_t i = 0; i < 1000; ++i) {
+    source[i] = static_cast<uint16_t>(i & 1 ? 0xAAAA : 0x5555);
+  }
+  uint8_t encoded[2 + 1000 * 2] = {};
+  uint16_t decoded[1000] = {};
+
+  const size_t length = rleEncode(source, 1000, encoded, sizeof(encoded));
+  TEST_ASSERT_EQUAL_UINT32(2 + 1000 * 2, static_cast<uint32_t>(length));
+  TEST_ASSERT_TRUE(rleDecode(encoded, length, decoded, sizeof(decoded) / sizeof(decoded[0])));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(reinterpret_cast<const uint8_t*>(source),
+                                reinterpret_cast<const uint8_t*>(decoded), sizeof(source));
+}
+
+static void test_rle_rejects_capacity_and_corrupt_streams() {
+  const uint16_t run[] = {0x1111, 0x1111, 0x1111};
+  const uint16_t literal[] = {0x1111, 0x2222};
+  uint8_t encoded[16] = {};
+
+  TEST_ASSERT_EQUAL_UINT32(0, static_cast<uint32_t>(rleEncode(run, 3, encoded, 3)));
+  TEST_ASSERT_EQUAL_UINT32(4, static_cast<uint32_t>(rleEncode(run, 3, encoded, sizeof(encoded))));
+  TEST_ASSERT_EQUAL_UINT32(0, static_cast<uint32_t>(rleEncode(literal, 2, encoded, 5)));
+
+  uint16_t out[4] = {};
+
+  // Zero-length run, then a value.
+  const uint8_t zeroRun[] = {0x00, 0x80, 0x11, 0x11};
+  TEST_ASSERT_FALSE(rleDecode(zeroRun, sizeof(zeroRun), out, 4));
+
+  // Zero-length literal.
+  const uint8_t zeroLiteral[] = {0x00, 0x00};
+  TEST_ASSERT_FALSE(rleDecode(zeroLiteral, sizeof(zeroLiteral), out, 4));
+
+  // Run longer than the remaining pixels.
+  const uint8_t longRun[] = {0x05, 0x80, 0x11, 0x11};
+  TEST_ASSERT_FALSE(rleDecode(longRun, sizeof(longRun), out, 4));
+
+  // Truncated run value.
+  const uint8_t shortRun[] = {0x02, 0x80, 0x11};
+  TEST_ASSERT_FALSE(rleDecode(shortRun, sizeof(shortRun), out, 4));
+
+  // Truncated literal payload.
+  const uint8_t shortLiteral[] = {0x02, 0x00, 0x11, 0x11};
+  TEST_ASSERT_FALSE(rleDecode(shortLiteral, sizeof(shortLiteral), out, 4));
+
+  // Valid stream plus a trailing byte.
+  const uint8_t trailing[] = {0x01, 0x00, 0x11, 0x11, 0x00};
+  TEST_ASSERT_FALSE(rleDecode(trailing, sizeof(trailing), out, 1));
+
+  // No pixels requested but bytes present.
+  TEST_ASSERT_FALSE(rleDecode(trailing, 1, out, 0));
+}
+
+static void test_pnt_header_round_trip_and_validation() {
+  pnt::Header header;
+  header.width = 320;
+  header.height = 432;
+  header.rleLength = 2048;
+  header.thumbnailOffset = static_cast<uint32_t>(pnt::kHeaderSize + header.rleLength);
+  header.crc = 0xDEADBEEFu;
+
+  uint8_t bytes[pnt::kHeaderSize] = {};
+  pnt::encodeHeader(bytes, header);
+
+  pnt::Header decoded;
+  TEST_ASSERT_TRUE(pnt::decodeHeader(bytes, sizeof(bytes), decoded));
+  TEST_ASSERT_EQUAL_UINT16(header.version, decoded.version);
+  TEST_ASSERT_EQUAL_UINT16(header.width, decoded.width);
+  TEST_ASSERT_EQUAL_UINT16(header.height, decoded.height);
+  TEST_ASSERT_EQUAL_UINT32(header.rleLength, decoded.rleLength);
+  TEST_ASSERT_EQUAL_UINT32(header.thumbnailOffset, decoded.thumbnailOffset);
+  TEST_ASSERT_EQUAL_UINT32(header.crc, decoded.crc);
+
+  uint8_t corrupt[pnt::kHeaderSize];
+
+  std::memcpy(corrupt, bytes, sizeof(bytes));
+  corrupt[0] ^= 0x01;
+  TEST_ASSERT_FALSE(pnt::decodeHeader(corrupt, sizeof(corrupt), decoded));
+
+  std::memcpy(corrupt, bytes, sizeof(bytes));
+  corrupt[4] = 2;
+  TEST_ASSERT_FALSE(pnt::decodeHeader(corrupt, sizeof(corrupt), decoded));
+
+  std::memcpy(corrupt, bytes, sizeof(bytes));
+  corrupt[6] = 1;
+  TEST_ASSERT_FALSE(pnt::decodeHeader(corrupt, sizeof(corrupt), decoded));
+
+  std::memcpy(corrupt, bytes, sizeof(bytes));
+  corrupt[24] = 1;
+  TEST_ASSERT_FALSE(pnt::decodeHeader(corrupt, sizeof(corrupt), decoded));
+
+  std::memcpy(corrupt, bytes, sizeof(bytes));
+  corrupt[16] ^= 0x01;
+  TEST_ASSERT_FALSE(pnt::decodeHeader(corrupt, sizeof(corrupt), decoded));
+
+  std::memcpy(corrupt, bytes, sizeof(bytes));
+  corrupt[12] = 0;
+  corrupt[13] = 0;
+  corrupt[14] = 0;
+  corrupt[15] = 0;
+  TEST_ASSERT_FALSE(pnt::decodeHeader(corrupt, sizeof(corrupt), decoded));
+
+  TEST_ASSERT_FALSE(pnt::decodeHeader(bytes, pnt::kHeaderSize - 1, decoded));
+}
+
+static void test_pnt_round_trip_is_pixel_identical() {
+  fillPntPattern(gPntSource, kStorageCanvasPixels);
+
+  const size_t length = pnt::encodeToBuffer(gPntSource, kStorageCanvasWidth, kStorageCanvasWidth,
+                                            kStorageCanvasHeight, gPntFile, sizeof(gPntFile));
+  TEST_ASSERT_GREATER_THAN_UINT32(static_cast<uint32_t>(pnt::kHeaderSize),
+                                  static_cast<uint32_t>(length));
+
+  pnt::Header header;
+  TEST_ASSERT_TRUE(pnt::decodeHeader(gPntFile, length, header));
+  TEST_ASSERT_EQUAL_UINT16(static_cast<uint16_t>(kStorageCanvasWidth), header.width);
+  TEST_ASSERT_EQUAL_UINT16(static_cast<uint16_t>(kStorageCanvasHeight), header.height);
+  TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(pnt::kHeaderSize + header.rleLength),
+                           header.thumbnailOffset);
+  TEST_ASSERT_EQUAL_UINT32(
+      static_cast<uint32_t>(header.thumbnailOffset + pnt::kThumbnailBytes),
+      static_cast<uint32_t>(length));
+
+  DocumentInfo info;
+  std::memset(gPntDecoded, 0, sizeof(gPntDecoded));
+  TEST_ASSERT_TRUE(pnt::decode(gPntFile, length, gPntDecoded, info));
+  TEST_ASSERT_EQUAL_UINT16(static_cast<uint16_t>(kStorageCanvasWidth), info.width);
+  TEST_ASSERT_EQUAL_UINT16(static_cast<uint16_t>(kStorageCanvasHeight), info.height);
+  TEST_ASSERT_EQUAL_UINT32(header.crc, info.crc);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(reinterpret_cast<const uint8_t*>(gPntSource),
+                                reinterpret_cast<const uint8_t*>(gPntDecoded),
+                                sizeof(gPntSource));
+}
+
+static void test_pnt_worst_case_fits_buffer() {
+  for (size_t y = 0; y < kStorageCanvasHeight; ++y) {
+    for (size_t x = 0; x < kStorageCanvasWidth; ++x) {
+      gPntSource[y * kStorageCanvasWidth + x] =
+          static_cast<uint16_t>((x & 1) ? 0xAAAA : 0x5555);
+    }
+  }
+
+  const size_t length = pnt::encodeToBuffer(gPntSource, kStorageCanvasWidth, kStorageCanvasWidth,
+                                            kStorageCanvasHeight, gPntFile, sizeof(gPntFile));
+  const size_t worstCase =
+      pnt::kHeaderSize + (2 + 2 * kStorageCanvasWidth) * kStorageCanvasHeight +
+      pnt::kThumbnailBytes;
+  TEST_ASSERT_GREATER_THAN_UINT32(0, static_cast<uint32_t>(length));
+  TEST_ASSERT_TRUE(length <= worstCase);
+
+  DocumentInfo info;
+  std::memset(gPntDecoded, 0, sizeof(gPntDecoded));
+  TEST_ASSERT_TRUE(pnt::decode(gPntFile, length, gPntDecoded, info));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(reinterpret_cast<const uint8_t*>(gPntSource),
+                                reinterpret_cast<const uint8_t*>(gPntDecoded),
+                                sizeof(gPntSource));
+}
+
+static void test_pnt_thumbnail_matches_nearest_sample() {
+  fillPntPattern(gPntSource, kStorageCanvasPixels);
+
+  const size_t length = pnt::encodeToBuffer(gPntSource, kStorageCanvasWidth, kStorageCanvasWidth,
+                                            kStorageCanvasHeight, gPntFile, sizeof(gPntFile));
+  TEST_ASSERT_GREATER_THAN_UINT32(0, static_cast<uint32_t>(length));
+
+  pnt::Header header;
+  TEST_ASSERT_TRUE(pnt::decodeHeader(gPntFile, length, header));
+
+  uint16_t expected[pnt::kThumbnailPixels] = {};
+  TEST_ASSERT_TRUE(pnt::buildThumbnail(gPntSource, kStorageCanvasWidth, kStorageCanvasWidth,
+                                       kStorageCanvasHeight, expected));
+
+  uint16_t actual[pnt::kThumbnailPixels] = {};
+  TEST_ASSERT_TRUE(pnt::decodeThumbnail(gPntFile, length, header, actual));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(reinterpret_cast<const uint8_t*>(expected),
+                                reinterpret_cast<const uint8_t*>(actual), sizeof(expected));
+
+  TEST_ASSERT_EQUAL_HEX16(gPntSource[0], actual[0]);
+  const size_t lastX = static_cast<size_t>(pnt::kThumbnailWidth - 1) * kStorageCanvasWidth /
+                       pnt::kThumbnailWidth;
+  const size_t lastY = static_cast<size_t>(pnt::kThumbnailHeight - 1) * kStorageCanvasHeight /
+                       pnt::kThumbnailHeight;
+  TEST_ASSERT_EQUAL_HEX16(gPntSource[lastY * kStorageCanvasWidth + lastX],
+                          actual[pnt::kThumbnailPixels - 1]);
+}
+
+static void test_pnt_rejects_corrupt_or_truncated_files() {
+  constexpr size_t width = 64;
+  constexpr size_t height = 48;
+
+  fillPntPattern(gPntSource, width * height);
+  const size_t length =
+      pnt::encodeToBuffer(gPntSource, width, width, height, gPntFile, sizeof(gPntFile));
+  TEST_ASSERT_GREATER_THAN_UINT32(0, static_cast<uint32_t>(length));
+
+  pnt::Header header;
+  TEST_ASSERT_TRUE(pnt::decodeHeader(gPntFile, length, header));
+
+  DocumentInfo info;
+  uint8_t copy[kMaxPntBytes];
+
+  std::memcpy(copy, gPntFile, length);
+  copy[0] ^= 0x01;
+  TEST_ASSERT_FALSE(pnt::decode(copy, length, gPntDecoded, info));
+
+  std::memcpy(copy, gPntFile, length);
+  copy[4] = 2;
+  TEST_ASSERT_FALSE(pnt::decode(copy, length, gPntDecoded, info));
+
+  std::memcpy(copy, gPntFile, length);
+  copy[6] = 1;
+  TEST_ASSERT_FALSE(pnt::decode(copy, length, gPntDecoded, info));
+
+  std::memcpy(copy, gPntFile, length);
+  copy[24] = 1;
+  TEST_ASSERT_FALSE(pnt::decode(copy, length, gPntDecoded, info));
+
+  std::memcpy(copy, gPntFile, length);
+  copy[pnt::kHeaderSize] ^= 0xFF;
+  TEST_ASSERT_FALSE(pnt::decode(copy, length, gPntDecoded, info));
+
+  std::memcpy(copy, gPntFile, length);
+  copy[header.thumbnailOffset + 1] ^= 0xFF;
+  TEST_ASSERT_FALSE(pnt::decode(copy, length, gPntDecoded, info));
+
+  TEST_ASSERT_FALSE(pnt::decode(gPntFile, length - 1, gPntDecoded, info));
+  TEST_ASSERT_FALSE(pnt::decode(gPntFile, length + 1, gPntDecoded, info));
+  TEST_ASSERT_FALSE(pnt::decode(gPntFile, pnt::kHeaderSize - 1, gPntDecoded, info));
+}
+
+static void test_pnt_decode_does_not_touch_destination_on_bad_crc() {
+  constexpr size_t width = 32;
+  constexpr size_t height = 24;
+  constexpr size_t count = width * height;
+
+  fillPntPattern(gPntSource, count);
+  const size_t length =
+      pnt::encodeToBuffer(gPntSource, width, width, height, gPntFile, sizeof(gPntFile));
+  TEST_ASSERT_GREATER_THAN_UINT32(0, static_cast<uint32_t>(length));
+
+  gPntFile[pnt::kHeaderSize] ^= 0xFF;
+
+  for (size_t i = 0; i < count; ++i) {
+    gPntDecoded[i] = 0x5A5A;
+  }
+  DocumentInfo info;
+  TEST_ASSERT_FALSE(pnt::decode(gPntFile, length, gPntDecoded, info));
+  for (size_t i = 0; i < count; ++i) {
+    TEST_ASSERT_EQUAL_HEX16(0x5A5A, gPntDecoded[i]);
+  }
+}
+
+static void test_pnt_rejects_malformed_rle_with_valid_crc() {
+  constexpr size_t width = 32;
+  constexpr size_t height = 24;
+  constexpr size_t count = width * height;
+
+  fillPntPattern(gPntSource, count);
+  const size_t length =
+      pnt::encodeToBuffer(gPntSource, width, width, height, gPntFile, sizeof(gPntFile));
+  TEST_ASSERT_GREATER_THAN_UINT32(0, static_cast<uint32_t>(length));
+
+  pnt::Header header;
+  TEST_ASSERT_TRUE(pnt::decodeHeader(gPntFile, length, header));
+
+  // Replace the first token with a zero-length run, then repair the CRC so the
+  // file passes the checksum but fails RLE validation.
+  gPntFile[pnt::kHeaderSize] = 0x00;
+  gPntFile[pnt::kHeaderSize + 1] = 0x80;
+  header.crc = crc32(gPntFile + pnt::kHeaderSize, length - pnt::kHeaderSize);
+  pnt::encodeHeader(gPntFile, header);
+
+  for (size_t i = 0; i < count; ++i) {
+    gPntDecoded[i] = 0x5A5A;
+  }
+  DocumentInfo info;
+  TEST_ASSERT_FALSE(pnt::decode(gPntFile, length, gPntDecoded, info));
+  for (size_t i = 0; i < count; ++i) {
+    TEST_ASSERT_EQUAL_HEX16(0x5A5A, gPntDecoded[i]);
+  }
+}
+
+static void test_pnt_encode_rejects_bad_arguments() {
+  fillPntPattern(gPntSource, 16);
+  TEST_ASSERT_EQUAL_UINT32(
+      0, static_cast<uint32_t>(pnt::encodeToBuffer(nullptr, 4, 4, 4, gPntFile, sizeof(gPntFile))));
+  TEST_ASSERT_EQUAL_UINT32(
+      0, static_cast<uint32_t>(pnt::encodeToBuffer(gPntSource, 3, 4, 4, gPntFile, sizeof(gPntFile))));
+  TEST_ASSERT_EQUAL_UINT32(
+      0, static_cast<uint32_t>(pnt::encodeToBuffer(gPntSource, 4, 0, 4, gPntFile, sizeof(gPntFile))));
+  TEST_ASSERT_EQUAL_UINT32(
+      0, static_cast<uint32_t>(pnt::encodeToBuffer(gPntSource, 4, 4, 0, gPntFile, sizeof(gPntFile))));
+  TEST_ASSERT_EQUAL_UINT32(
+      0, static_cast<uint32_t>(pnt::encodeToBuffer(gPntSource, 4, 4, 4, gPntFile, 16)));
+}
+
+static void test_orientation_and_idle_mapping() {
+  const Point p{10, 20};
+  const Point flipped = mapCanonicalToDisplay(p, 0);
+  TEST_ASSERT_EQUAL_INT16(309, flipped.x);
+  TEST_ASSERT_EQUAL_INT16(459, flipped.y);
+  TEST_ASSERT_EQUAL_INT16(p.x, mapCanonicalToDisplay(p, 2).x);
+  TEST_ASSERT_EQUAL_INT16(p.y, mapCanonicalToDisplay(p, 2).y);
+  TEST_ASSERT_EQUAL_INT16(p.x, mapDisplayToCanonical(flipped, 0).x);
+  TEST_ASSERT_EQUAL_INT16(p.y, mapDisplayToCanonical(flipped, 0).y);
+  TEST_ASSERT_TRUE(isSupportedRotation(0));
+  TEST_ASSERT_TRUE(isSupportedRotation(2));
+  TEST_ASSERT_FALSE(isSupportedRotation(1));
+  TEST_ASSERT_EQUAL_UINT8(2, normalizeRotation(3));
+
+  IdleController idle;
+  idle.reset(1000);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(IdleLevel::Active),
+                        static_cast<int>(idle.update(1000 + config::kIdleDimMs - 1)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(IdleLevel::Dimmed),
+                        static_cast<int>(idle.update(1000 + config::kIdleDimMs)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(IdleLevel::Off),
+                        static_cast<int>(idle.update(1000 + config::kIdleOffMs)));
+  TEST_ASSERT_TRUE(idle.shouldWakeAndConsume(true));
+  idle.noteTouch(1000 + config::kIdleOffMs + 1);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(IdleLevel::Active),
+                        static_cast<int>(idle.level()));
+  TEST_ASSERT_FALSE(idle.shouldWakeAndConsume(true));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(IdleLevel::Active),
+                        static_cast<int>(idle.update(1000 + config::kIdleOffMs +
+                                                     config::kIdleDimMs - 1)));
+}
+
+static void test_boot_health_codec_and_threshold() {
+  uint8_t blob[boot_health::kBlobSize] = {};
+  boot_health::State state;
+  state.badBoots = 2;
+  state.valid = true;
+  boot_health::encode(state, blob);
+  TEST_ASSERT_EQUAL_UINT8('P', blob[0]);
+  TEST_ASSERT_EQUAL_UINT8('B', blob[1]);
+
+  boot_health::State decoded;
+  TEST_ASSERT_TRUE(boot_health::decode(blob, sizeof(blob), decoded));
+  TEST_ASSERT_TRUE(decoded.valid);
+  TEST_ASSERT_EQUAL_UINT8(2, decoded.badBoots);
+  TEST_ASSERT_FALSE(decoded.recoveryRequired());
+
+  state.badBoots = 9;
+  boot_health::encode(state, blob);
+  TEST_ASSERT_TRUE(boot_health::decode(blob, sizeof(blob), decoded));
+  TEST_ASSERT_EQUAL_UINT8(config::kBootFailThreshold, decoded.badBoots);
+  TEST_ASSERT_TRUE(decoded.recoveryRequired());
+
+  blob[4] ^= 0x01;
+  TEST_ASSERT_FALSE(boot_health::decode(blob, sizeof(blob), decoded));
+  TEST_ASSERT_FALSE(boot_health::decode(blob, sizeof(blob) - 1, decoded));
+  TEST_ASSERT_FALSE(boot_health::decode(nullptr, sizeof(blob), decoded));
+}
+
+static void test_ui_settings_controls_persist_requests() {
+  Ui ui;
+  ui.begin(0);
+  ui.update(TouchFrame{}, 900);
+
+  uiTap(ui, 280, 24, 1000);
+  uiTap(ui, 160, 358, 1200);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Settings),
+                        static_cast<int>(ui.screen()));
+  TEST_ASSERT_TRUE(ui_layout::kRotationButton.h >= 44);
+  TEST_ASSERT_TRUE(ui_layout::kSettingsWifiToggle.h >= 44);
+
+  uiTap(ui, 160, ui_layout::kRotationButton.y + 22, 1400);
+  TEST_ASSERT_TRUE(ui.takeRotationToggleRequest());
+  TEST_ASSERT_FALSE(ui.takeRotationToggleRequest());
+  ui.setRotation(0);
+  TEST_ASSERT_EQUAL_UINT8(0, ui.rotation());
+  uiTap(ui, 160, ui_layout::kRotationButton.y + 22, 1500);
+  TEST_ASSERT_TRUE(ui.takeRotationToggleRequest());
+  ui.setRotation(2);
+  TEST_ASSERT_EQUAL_UINT8(2, ui.rotation());
+
+  ui.setBrightness(192);
+  uiTap(ui, ui_layout::kBrightnessDownButton.x + 22,
+        ui_layout::kBrightnessDownButton.y + 22, 1600);
+  int8_t step = 0;
+  TEST_ASSERT_TRUE(ui.takeBrightnessStepRequest(step));
+  TEST_ASSERT_EQUAL_INT8(-1, step);
+  TEST_ASSERT_FALSE(ui.takeBrightnessStepRequest(step));
+  uiTap(ui, ui_layout::kBrightnessUpButton.x + 22,
+        ui_layout::kBrightnessUpButton.y + 22, 1700);
+  TEST_ASSERT_TRUE(ui.takeBrightnessStepRequest(step));
+  TEST_ASSERT_EQUAL_INT8(1, step);
+
+  ui.setBrightness(config::kBrightnessLevels[0]);
+  uiTap(ui, ui_layout::kBrightnessDownButton.x + 22,
+        ui_layout::kBrightnessDownButton.y + 22, 1750);
+  TEST_ASSERT_FALSE(ui.takeBrightnessStepRequest(step));
+  ui.setBrightness(
+      config::kBrightnessLevels[config::kBrightnessLevelCount - 1]);
+  uiTap(ui, ui_layout::kBrightnessUpButton.x + 22,
+        ui_layout::kBrightnessUpButton.y + 22, 1760);
+  TEST_ASSERT_FALSE(ui.takeBrightnessStepRequest(step));
+
+  NetInfo info;
+  info.configured = true;
+  info.enabled = true;
+  info.state = NetState::Connected;
+  ui.setNetworkInfo(info);
+  uiTap(ui, 160, ui_layout::kSettingsWifiToggle.y + 22, 1800);
+  TEST_ASSERT_TRUE(ui.takeNetworkToggleRequest());
+  TEST_ASSERT_FALSE(ui.takeNetworkToggleRequest());
+
+  // Disabling an enabled link must stay possible when OTA storage is low.
+  info.lowStorage = true;
+  ui.setNetworkInfo(info);
+  uiTap(ui, 160, ui_layout::kSettingsWifiToggle.y + 22, 1850);
+  TEST_ASSERT_TRUE(ui.takeNetworkToggleRequest());
+  TEST_ASSERT_FALSE(ui.takeNetworkToggleRequest());
+
+  uiTap(ui, ui_layout::kAboutButton.x + 20,
+        ui_layout::kAboutButton.y + 22, 1900);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::About),
+                        static_cast<int>(ui.screen()));
+  uiTap(ui, 40, 24, 2000);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Settings),
+                        static_cast<int>(ui.screen()));
+
+  uiTap(ui, ui_layout::kStorageDetailsButton.x + 20,
+        ui_layout::kStorageDetailsButton.y + 22, 2100);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Storage),
+                        static_cast<int>(ui.screen()));
+  uiTap(ui, 40, 24, 2200);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Settings),
+                        static_cast<int>(ui.screen()));
+
+  uiTap(ui, ui_layout::kSettingsNetworkButton.x + 20,
+        ui_layout::kSettingsNetworkButton.y + 22, 2300);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Network),
+                        static_cast<int>(ui.screen()));
+  uiTap(ui, 40, 24, 2400);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Settings),
+                        static_cast<int>(ui.screen()));
+
+  uiTap(ui, ui_layout::kCalibrateButton.x + 20,
+        ui_layout::kCalibrateButton.y + 22, 2500);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Calibrate),
+                        static_cast<int>(ui.screen()));
+  uiTap(ui, 160, 454, 2600);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Settings),
+                        static_cast<int>(ui.screen()));
+
+  uiTap(ui, 40, 24, 2700);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Canvas),
+                        static_cast<int>(ui.screen()));
+}
+
+static void test_ui_safe_mode_self_test_flow() {
+  Ui ui;
+  ui.begin(0);
+  ui.setSafeMode(true, true, false, true);
+  ui.update(TouchFrame{}, 900);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::SafeMode),
+                        static_cast<int>(ui.screen()));
+
+  uiTap(ui, ui_layout::kSafeDisplayTest.x + 20,
+        ui_layout::kSafeDisplayTest.y + 22, 1000);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::DisplayTest),
+                        static_cast<int>(ui.screen()));
+  uiTap(ui, ui_layout::kDisplayTestBack.x + 20,
+        ui_layout::kDisplayTestBack.y + 22, 1100);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::SafeMode),
+                        static_cast<int>(ui.screen()));
+
+  uiTap(ui, ui_layout::kSafeTouchTest.x + 20,
+        ui_layout::kSafeTouchTest.y + 22, 1200);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::TouchTest),
+                        static_cast<int>(ui.screen()));
+  TouchFrame touch;
+  touch.pressed = true;
+  touch.down = true;
+  touch.x = 120;
+  touch.y = 180;
+  touch.rawX = 1800;
+  touch.rawY = 2600;
+  ui.update(touch, 1300);
+  uiTap(ui, ui_layout::kTouchTestBack.x + 20,
+        ui_layout::kTouchTestBack.y + 22, 1400);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::SafeMode),
+                        static_cast<int>(ui.screen()));
+
+  uiTap(ui, ui_layout::kSafeStorageTest.x + 20,
+        ui_layout::kSafeStorageTest.y + 22, 1500);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::Storage),
+                        static_cast<int>(ui.screen()));
+  uiTap(ui, 40, 24, 1600);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Screen::SafeMode),
+                        static_cast<int>(ui.screen()));
+
+  uiTap(ui, ui_layout::kSafeContinue.x + 20,
+        ui_layout::kSafeContinue.y + 22, 1700);
+  TEST_ASSERT_TRUE(ui.takeSafeModeContinueRequest());
+  TEST_ASSERT_FALSE(ui.takeSafeModeContinueRequest());
+  uiTap(ui, ui_layout::kSafeReboot.x + 20,
+        ui_layout::kSafeReboot.y + 22, 1800);
+  TEST_ASSERT_TRUE(ui.takeSafeModeRebootRequest());
+  TEST_ASSERT_FALSE(ui.takeSafeModeRebootRequest());
+}
+
+static void test_ui_accessibility_primary_targets() {
+  const Rect targets[] = {
+      ui_layout::kButtons[0],           ui_layout::kButtons[1],
+      ui_layout::kButtons[2],           ui_layout::kButtons[3],
+      ui_layout::kButtons[4],           ui_layout::kButtons[5],
+      ui_layout::kBackButton,           ui_layout::kRotationButton,
+      ui_layout::kBrightnessDownButton, ui_layout::kBrightnessUpButton,
+      ui_layout::kSettingsWifiToggle,   ui_layout::kCalibrateButton,
+      ui_layout::kStorageDetailsButton, ui_layout::kAboutButton,
+      ui_layout::kSettingsNetworkButton, ui_layout::kNetworkToggleButton,
+      ui_layout::kSafeDisplayTest,      ui_layout::kSafeTouchTest,
+      ui_layout::kSafeStorageTest,      ui_layout::kSafeContinue,
+      ui_layout::kSafeReboot,           ui_layout::kDisplayTestBack,
+      ui_layout::kTouchTestBack,        ui_layout::kCalibrationCancel,
+      ui_layout::kConfirmNewCancel,     ui_layout::kConfirmNewOk,
+      ui_layout::kGalleryCancel,        ui_layout::kGalleryOpen,
+      ui_layout::kGalleryPrev,          ui_layout::kGalleryNext,
+      ui_layout::kHsvCancel,            ui_layout::kHsvOk,
+      ui_layout::kRecoveryRestore,      ui_layout::kRecoveryDiscard,
+  };
+  for (const Rect& r : targets) {
+    TEST_ASSERT_TRUE(r.w >= 44);
+    TEST_ASSERT_TRUE(r.h >= 44);
+    TEST_ASSERT_TRUE(ui_layout::kScreen.contains({r.x, r.y}));
+    TEST_ASSERT_TRUE(ui_layout::kScreen.contains(
+        {static_cast<int16_t>(r.right() - 1),
+         static_cast<int16_t>(r.bottom() - 1)}));
+  }
+
+  for (int i = 0; i < 7; ++i) {
+    TEST_ASSERT_TRUE(ui_layout::toolItemRect(i).h >= 44);
+    TEST_ASSERT_TRUE(ui_layout::sizeItemRect(i).w >= 44);
+    TEST_ASSERT_TRUE(ui_layout::sizeItemRect(i).h >= 44);
+    TEST_ASSERT_TRUE(ui_layout::menuItemRect(i).h >= 44);
+  }
+  for (int i = 0; i < 24; ++i) {
+    TEST_ASSERT_TRUE(ui_layout::paletteSwatchRect(i).w >= 44);
+    TEST_ASSERT_TRUE(ui_layout::paletteSwatchRect(i).h >= 44);
+  }
 }
 
 int main(int, char**) {
@@ -1099,6 +2356,8 @@ int main(int, char**) {
   RUN_TEST(test_stroke_controller_eraser_and_cancel);
   RUN_TEST(test_undo_redo_round_trip);
   RUN_TEST(test_shape_preview_cancel_leaves_no_residue);
+  RUN_TEST(test_shape_filled_commit_and_undo);
+  RUN_TEST(test_undo_long_action_tiles);
   RUN_TEST(test_shape_commit_rect_and_ellipse_undo);
   RUN_TEST(test_flood_fill_stays_inside_outline);
   RUN_TEST(test_flood_fill_same_colour_is_noop);
@@ -1110,6 +2369,8 @@ int main(int, char**) {
   RUN_TEST(test_touch_calibration_center_and_clamp);
   RUN_TEST(test_touch_calibration_plausibility);
   RUN_TEST(test_settings_codec_round_trip);
+  RUN_TEST(test_settings_codec_v1_migration);
+  RUN_TEST(test_settings_codec_rejects_invalid_last_opened);
   RUN_TEST(test_touch_state_debounce_and_tap);
   RUN_TEST(test_touch_state_move_threshold);
   RUN_TEST(test_touch_state_long_press);
@@ -1124,8 +2385,35 @@ int main(int, char**) {
   RUN_TEST(test_hsv_color_round_trip);
   RUN_TEST(test_ui_layout_new_sheets_and_recent_colors);
   RUN_TEST(test_ui_new_canvas_confirmation_flow);
+  RUN_TEST(test_ui_save_and_save_as_flow);
+  RUN_TEST(test_ui_gallery_load_delete_and_paging);
+  RUN_TEST(test_ui_gallery_empty_and_file_names);
+  RUN_TEST(test_ui_storage_details_screen);
+  RUN_TEST(test_ui_network_screen_flow);
+  RUN_TEST(test_autosave_timer_schedule);
+  RUN_TEST(test_storage_space_and_ota_headroom);
+  RUN_TEST(test_ui_boot_recovery_prompt);
   RUN_TEST(test_ui_hsv_picker_flow);
   RUN_TEST(test_ui_hsv_tap_dirty_bounds);
+  RUN_TEST(test_ui_tool_options_and_shape_fill);
   RUN_TEST(test_ui_undo_requests_and_availability);
+  RUN_TEST(test_crc32_known_vectors);
+  RUN_TEST(test_crc32_incremental_matches_oneshot);
+  RUN_TEST(test_rle_round_trip_runs_and_literals);
+  RUN_TEST(test_rle_encodes_worst_case_within_bound);
+  RUN_TEST(test_rle_rejects_capacity_and_corrupt_streams);
+  RUN_TEST(test_pnt_header_round_trip_and_validation);
+  RUN_TEST(test_pnt_round_trip_is_pixel_identical);
+  RUN_TEST(test_pnt_worst_case_fits_buffer);
+  RUN_TEST(test_pnt_thumbnail_matches_nearest_sample);
+  RUN_TEST(test_pnt_rejects_corrupt_or_truncated_files);
+  RUN_TEST(test_pnt_decode_does_not_touch_destination_on_bad_crc);
+  RUN_TEST(test_pnt_rejects_malformed_rle_with_valid_crc);
+  RUN_TEST(test_pnt_encode_rejects_bad_arguments);
+  RUN_TEST(test_orientation_and_idle_mapping);
+  RUN_TEST(test_boot_health_codec_and_threshold);
+  RUN_TEST(test_ui_settings_controls_persist_requests);
+  RUN_TEST(test_ui_safe_mode_self_test_flow);
+  RUN_TEST(test_ui_accessibility_primary_targets);
   return UNITY_END();
 }

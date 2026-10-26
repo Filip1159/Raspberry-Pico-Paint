@@ -5,12 +5,16 @@
 //
 // Layout (little-endian):
 //   0  magic        u32  'PCFG'
-//   4  version      u16
-//   6  payload size u16
+//   4  version      u16  (2)
+//   6  payload size u16  (44)
 //   8  checksum     u32  FNV-1a over the payload
-//  12  payload      28 bytes:
-//        rotation u8, brightness u8, otaEnabled u8, reserved u8,
-//        calibration a,b,c,d,e,f as int32 (a,b,d,e Q16.16; c,f pixels)
+//  12  payload      44 bytes:
+//        rotation u8, brightness u8, otaEnabled u8, flags u8,
+//        calibration a,b,c,d,e,f as int32 (a,b,d,e Q16.16; c,f pixels),
+//        lastOpened 16 bytes (bare "imgNNNN.pnt", zero-padded)
+//
+// Version 1 files (28-byte payload, no flags/lastOpened) are still accepted and
+// migrated by clearing the new fields.
 
 #include <cstddef>
 #include <cstdint>
@@ -20,10 +24,13 @@
 namespace paint::settings_codec {
 
 constexpr uint32_t kMagic = 0x47464350u;  // little-endian bytes "PCFG"
-constexpr uint16_t kVersion = 1;
+constexpr uint16_t kVersion = 2;
+constexpr uint16_t kVersion1 = 1;
 constexpr size_t kHeaderSize = 12;
-constexpr size_t kPayloadSize = 28;
+constexpr size_t kPayloadSize1 = 28;
+constexpr size_t kPayloadSize = 44;
 constexpr size_t kBlobSize = kHeaderSize + kPayloadSize;
+constexpr size_t kNameSize = 16;
 
 inline uint16_t readU16(const uint8_t* p) {
   return static_cast<uint16_t>(p[0] | (static_cast<uint16_t>(p[1]) << 8));
@@ -64,7 +71,7 @@ inline void encode(const Settings& settings, uint8_t* out) {
   payload[0] = settings.rotation;
   payload[1] = settings.brightness;
   payload[2] = settings.otaEnabled ? 1 : 0;
-  payload[3] = 0;
+  payload[3] = settings.flags;
 
   const uint32_t coefficients[6] = {
       static_cast<uint32_t>(settings.calibration.a),
@@ -78,6 +85,13 @@ inline void encode(const Settings& settings, uint8_t* out) {
     writeU32(payload + 4 + i * 4, coefficients[i]);
   }
 
+  for (size_t i = 0; i < kNameSize; ++i) {
+    payload[kPayloadSize1 + i] = 0;
+  }
+  for (size_t i = 0; i + 1 < kNameSize && settings.lastOpened[i]; ++i) {
+    payload[kPayloadSize1 + i] = static_cast<uint8_t>(settings.lastOpened[i]);
+  }
+
   writeU32(out, kMagic);
   writeU16(out + 4, kVersion);
   writeU16(out + 6, static_cast<uint16_t>(kPayloadSize));
@@ -85,16 +99,23 @@ inline void encode(const Settings& settings, uint8_t* out) {
 }
 
 inline bool decode(const uint8_t* data, size_t length, Settings& out) {
-  if (!data || length != kBlobSize) {
+  if (!data || length < kHeaderSize) {
     return false;
   }
-  if (readU32(data) != kMagic || readU16(data + 4) != kVersion ||
-      readU16(data + 6) != kPayloadSize) {
+  if (readU32(data) != kMagic) {
+    return false;
+  }
+
+  const uint16_t version = readU16(data + 4);
+  const uint16_t payloadSize = readU16(data + 6);
+  const bool v1 = version == kVersion1 && payloadSize == kPayloadSize1;
+  const bool v2 = version == kVersion && payloadSize == kPayloadSize;
+  if ((!v1 && !v2) || length != kHeaderSize + payloadSize) {
     return false;
   }
 
   const uint8_t* payload = data + kHeaderSize;
-  if (readU32(data + 8) != checksum(payload, kPayloadSize)) {
+  if (readU32(data + 8) != checksum(payload, payloadSize)) {
     return false;
   }
 
@@ -102,12 +123,25 @@ inline bool decode(const uint8_t* data, size_t length, Settings& out) {
   decoded.rotation = payload[0];
   decoded.brightness = payload[1];
   decoded.otaEnabled = payload[2] != 0;
+  decoded.flags = v2 ? payload[3] : 0;
   decoded.calibration.a = static_cast<int32_t>(readU32(payload + 4));
   decoded.calibration.b = static_cast<int32_t>(readU32(payload + 8));
   decoded.calibration.c = static_cast<int32_t>(readU32(payload + 12));
   decoded.calibration.d = static_cast<int32_t>(readU32(payload + 16));
   decoded.calibration.e = static_cast<int32_t>(readU32(payload + 20));
   decoded.calibration.f = static_cast<int32_t>(readU32(payload + 24));
+
+  if (v2) {
+    for (size_t i = 0; i < kNameSize; ++i) {
+      decoded.lastOpened[i] = static_cast<char>(payload[kPayloadSize1 + i]);
+    }
+    decoded.lastOpened[kNameSize - 1] = '\0';
+    if (decoded.lastOpened[0] != '\0' &&
+        (!isPntFileName(decoded.lastOpened) ||
+         isAutosaveFileName(decoded.lastOpened))) {
+      decoded.lastOpened[0] = '\0';
+    }
+  }
 
   out = decoded;
   return true;

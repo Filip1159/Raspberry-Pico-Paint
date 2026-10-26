@@ -1,8 +1,8 @@
 # Pico Paint — Backlog & Implementation Plan
 
 **Target hardware:** Raspberry Pi Pico 2 W (RP2350, 4 MB flash, 520 KB SRAM) + 4" 480×320 ILI9488 SPI TFT (used in **portrait 320×480**) with **HR2046 / XPT2046-compatible** resistive touch
-**Status:** M0–M4 complete and hardware-verified; M5 (line, rectangle, ellipse, flood fill, eyedropper) implemented and native-tested; M4-11/M4-12 follow-ups open; M6 storage next
-**Last updated:** 2026-10-24
+**Status:** M0–M6 hardware-validated; M7-1–M7-8 (non-blocking Wi-Fi, Wi-Fi & OTA status screen, ArduinoOTA callbacks, OTA autosave/undo handling, progress overlay, reserve preflight, `pico2w_ota` environment and version banner) implemented and native-tested; M7-12 security documentation complete; a first OTA upload is confirmed through the Windows helper; M7-9–M7-11 hardware validation remains. **M8-1–M8-9 are source-complete and native-tested, but M8 hardware acceptance is still pending** (rotation/touch mapping, idle wake, persistence, recovery entry, boot-health counting and self-tests). The M6 save/load/gallery, autosave recovery, storage gauge, config migration and diagnostics flows were confirmed on hardware; M4/M5 follow-up re-measurement and the long-term flash-wear soak remain.
+**Last updated:** 2026-10-26
 
 ---
 
@@ -45,9 +45,15 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - M4 was **hardware-validated on 2026-10-24** with the diagnostics build on COM16. Drawing, undo, New-canvas clear and the overlay flows work. Free heap is **57,008 B** on the normal build and **56,904 B** on the diag build, flat through 5+ minutes of activity; the estimated 58,576 B budget differs only by allocator overhead.
 - M4 flushes: 1 px stroke ~139–152 µs/frame (100 Hz touch-limited), 8 px ~143–153 µs (87–96 Hz), 24 px ~648–681 µs (78–93 Hz); first-dab flush 0.33–1.0 ms. A 3.9 s 1 px stroke used 31 undo tile records / 4,560 B; five 24 px dots used 11 records / 1,372 B and undid in 2.1–3.1 ms.
 - M4 profiling found two follow-ups: long 8/24 px squiggles exceeded the 32-tile per-action undo cap and showed "Stroke too large to undo" (M4-11), and HSV taps take 90–103 ms with the 179 ms HSV open, above the 50 ms target (M4-12).
-- M5 builds verified on 2026-10-24: `pico2w_usb` RAM **159,424 B (30.4%)**, flash **423,056 B (20.2%)**; `pico2w_diag` RAM **159,524 B**, flash **424,328 B**. Native suite **44/44** including shape preview/cancel, commit+undo for rect/ellipse, flood fill inside/outside outline, and flood fill noop. Free heap budget **37,184 B**.
+- M4-11 is implemented: one action may now reference all **51** tile records (up from 32), and a 40-tile action plus the 52-tile overflow path are covered by native tests. M4-12 is implemented: the HSV square paints a 32×32 grid, S/V taps dirty only the old/new 21×21 marker bounds, and hue taps dirty only 7×30 marker bounds plus the square. Hardware re-measurement of both is still pending.
+- M5 builds verified on 2026-10-24; latest build after the follow-ups: `pico2w_usb` RAM **160,208 B (30.6%)**, flash **430,212 B (20.6%)**; `pico2w_diag` RAM **160,308 B**, flash **431,492 B (20.6%)**. Native suite **47/47** including shape preview/cancel, commit+undo for rect/ellipse/filled shapes, 40-tile undo actions, flood fill inside/outside outline, flood fill noop, tool options and canvas clamping. Free heap budget **36,400 B**.
+- M6-1–M6-3 are implemented on 2026-10-25: `paint/crc32.h` (IEEE CRC-32), `paint/codec_rle` (16-bit run/literal tokens, strict decoder and validator), `paint/pnt` (32-byte header, streaming RLE + raw 64×86 thumbnail, verified decode) and `storage/pnt_file` (`.tmp` write, CRC/RLE verification, then rename). The native suite covers known CRC vectors, incremental CRC, RLE round-trip/worst-case/corrupt streams, header validation, pixel-identical `.pnt` round-trip, thumbnail sampling, CRC rejection and bad-argument paths.
+- M6-4/M6-5 are implemented on 2026-10-25: the menu has separate **Save**/**Save as** entries; Save overwrites the current document or asks for a new name, and Save as allocates the next free `imgNNNN.pnt` and confirms it. Gallery taps open a load confirmation that warns about unsaved changes; long-press opens a delete confirmation. The gallery is a paged 2×2 grid with streamed thumbnails, filenames, page arrows and an empty state. `storage/paint_files` scans/sorts up to 32 `*.pnt` files and allocates names by checking the real directory, so Save as cannot collide with files beyond the index cap. At that stage the native suite was **63/63** (name/path helpers, menu layout, save-as flow, gallery paging, load/delete confirmations and empty state), with builds at `pico2w_usb`/`pico2w_ota` RAM **161,352 B**, flash **439,300 B** and `pico2w_diag` RAM **161,452 B**, flash **440,588 B**.
+- M6-6 is implemented on 2026-10-25: `paint::AutosaveTimer` arms on the first change and saves at most 15 s later; further changes do not postpone the deadline. Autosaves go to `/paint/autosave.pnt` through the existing atomic `savePnt()` path and are deferred while a brush or shape preview is active. The gallery excludes the autosave. At boot `isPntFileValid()` checks the header, exact dimensions, size, CRC32 and RLE structure; a valid file shows a modal Recovery screen with Restore/Discard, and an invalid one is removed. Restore loads the pixels as an unnamed dirty document and keeps the autosave until the next clean save; Discard deletes it. Successful Save/Save as, load and New canvas also delete it, while failed saves/recovery keep it. At the M6-6 stage the native suite was **65/65** (autosave schedule, autosave naming and boot recovery flows), with builds at `pico2w_usb`/`pico2w_ota` RAM **161,360 B**, flash **441,252 B** and `pico2w_diag` RAM **161,460 B**, flash **442,516 B**. Recovery was exercised on hardware in M6-10; long-term flash wear remains a follow-up.
+- M6-7 is implemented on 2026-10-25: `storage::StorageStats` computes used/free bytes and the 700 KB OTA reserve, and `Storage` now owns the LittleFS mount/stats/format helpers. Settings shows a storage gauge with free KB, used percentage and an `OTA reserve: OK/LOW` status. The Wi-Fi & OTA menu entry refuses to continue when free space is below **716,800 B** and reports `Need 700 KB free for OTA`; saves below the reserve still succeed but report `Saved … - OTA low` so drawings can still be rescued. At the M6-7 stage the native suite was **66/66** (space/headroom calculations and the UI guard), with builds at `pico2w_usb`/`pico2w_ota` RAM **161,376 B**, flash **442,196 B** and `pico2w_diag` RAM **161,476 B**, flash **443,468 B**. The gauge was confirmed on hardware in M6-10; the live OTA refusal still needs the M7 hardware run.
+- M6-8/M6-9 are implemented on 2026-10-25: `/config.bin` moved to a version 2, 44-byte payload with rotation, brightness, OTA enable, flags, the six calibration values and a 16-byte last-opened filename. Version 1 (28-byte) blobs still decode; the new fields default to empty/zero and the file is upgraded on the next save. Save/Save as and load record the last-opened name; New, deleting that file and recovery Restore/Discard clear it. Settings → **Storage details** adds a diagnostics page with mount status, total/used/free KB, the real `PaintFileIndex::totalCount()` (files beyond the 32-entry gallery index are counted) and the OTA-reserve state. The native suite is now **69/69** (adds v2 round-trip, v1 migration, invalid/autosave last-opened rejection and the Storage screen flow). Current builds: `pico2w_usb`/`pico2w_ota` RAM **161,404 B**, flash **443,380 B**; `pico2w_diag` RAM **161,504 B**, flash **444,652 B**; free-heap estimate **35,204 B**. Config migration and the diagnostics page were confirmed on hardware in M6-10.
 - M4 drawing engine is implemented and hardware-validated: clipped `Canvas` over the shared framebuffer, seven round brush masks, gap-free brush/eraser strokes with per-dab undo capture, palette + five recent colours, HSV picker, compressed undo/redo, New-canvas confirmation, and overlay-safe presentation for sheets/toasts/screens. Host-preview screenshots exercise the art, sheets, toast, undo/redo, New confirmation, HSV picking and recent-colour row.
-- Undo/redo uses a fixed ~64 KB in-object pool: 44 RLE tile records + 7 raw tile records, up to 16 actions and 32 tiles/action. Each action captures "before" tiles, converts them to XOR deltas at commit, and evicts the oldest action when the pool fills. Ten normal undo levels now fit in cases that previously exhausted the 30 raw-tile pool; pathological strokes can still trim history.
+- Undo/redo uses a fixed ~64 KB in-object pool: 44 RLE tile records + 7 raw tile records, up to 16 actions and one action may use all 51 tile records. Each action captures "before" tiles, converts them to XOR deltas at commit, and evicts the oldest action when the pool fills. Ten normal undo levels fit in cases that previously exhausted the 30 raw-tile pool; pathological strokes can still trim history, but long multi-second squiggles no longer fail at the old 32-tile cap.
 - M2 is hardware-verified: correct colours, upright portrait at rotation 2, no offset/clipping, stable 40 MHz SPI, 139.3 ms full-screen flush, 143,360 B free heap after the framebuffer.
 - M3-1 is hardware-validated: the HR2046 responds on SPI1 at all four corners. Raw ranges are roughly X 260–3880 and Y 298–3807. The normal build prints `down`, `up`, `tap` and `long-press`; `pico2w_diag` additionally prints `move`, raw samples and UI flush timings.
 - M3-2 calibration is implemented as a full Q16.16 affine least-squares fit from four corner samples. The panel's raw axes are rotated 90° relative to the display (raw X top→bottom, raw Y left→right), so the transform includes cross terms; all four corners map within ~1 px. Settings are stored in `/config.bin` with a magic/version/FNV-1a checksum header and atomic `/config.tmp` → rename replacement; implausible or corrupt calibration falls back to the factory map.
@@ -59,7 +65,7 @@ Layers, zoom/pan, text tool, image import, SD card, cloud sync, PNG export over 
 - Measured M3 UI flushes: 44×44 top-bar button 1.85–1.98 ms; 288×36 toast 9.44 ms; sheet flushes 34.9–98.7 ms; full-screen transition 139.3 ms. `setSheet()` now dirties only the affected 44×44 button(s) instead of the whole 320×48 bar, saving ~12 ms per sheet transition. Details in `docs/performance.md`.
 - Git repository initialized (`main`); M1, M2, the M3 touch driver/UI shell and the M4 drawing engine are committed.
 
-**Next action:** start M5 (line, rectangle, ellipse, flood fill and eyedropper). Consider closing M4-11 (long-stroke undo cap) and M4-12 (HSV repaint latency) before or during M5, since both affect the new tools. M4-10 is profiled and closed; the measured numbers and remaining follow-ups are in `docs/performance.md`.
+**Next action:** Run the M8 hardware acceptance and then finish M7-9–M7-11. First flash `pico2w_usb` and verify rotation 0/2 (a true 180° flip, not a mirror), touch mapping and calibration in both rotations, all four brightness steps, 60 s dim / 5 min off / first-touch wake, settings persistence across a power cycle, safe-mode entry by hold-at-boot, the three boot-health failures, and the Display/Touch/Storage self-tests. Then power the Pico, confirm its current IP in the Wi-Fi & OTA screen, and run ten consecutive `tools/ota_windows.sh` uploads while checking that drawings/config survive. Exercise wrong-password, Wi-Fi loss, power loss and low-space paths, and verify USB/BOOTSEL recovery. Record `[mem] free heap before net` / `[mem] free heap` from the serial log and re-measure the M4-11 long strokes, M4-12 HSV taps, the filled-shape options row and the M5-8 clamp/cancel edge cases on the same hardware session. The pre-change measurements and expected payload reductions are in `docs/performance.md`.
 
 ---
 
@@ -177,12 +183,18 @@ Rule: `Paint`, `Storage` codecs, and geometry helpers must be **Arduino-free** s
 | `include/paint/document.h` | Metadata, save/load orchestration |
 | `include/paint/codec_rle.h` | RLE encode/decode + CRC32 |
 | `include/storage/storage.h` | LittleFS mount, files, free space, atomic writes |
-| `include/storage/config.h` | Calibration, rotation, brightness, flags |
-| `include/ui/ui.h` | Screens, widgets, hit testing, toasts, modals |
+| `include/storage/settings.h`, `settings_codec.h` | Rotation, brightness, OTA flag, calibration, last-opened filename |
+| `include/storage/autosave.h` | 15 s autosave schedule |
+| `include/storage/paint_files.h` | Gallery scan/sort and next-name allocation |
+| `include/storage/pnt_file.h` | Atomic `.pnt` save/load/validate |
+| `include/storage/boot_health.h` | 8-byte boot-health blob, CRC and threshold (header-only codec) |
+| `include/ui/ui.h` | Screens, widgets, hit testing, toasts, modals, Settings/recovery |
+| `include/ui/idle.h` | Idle dim/off/wake state machine |
 | `include/ui/font5x7.h` | 5×7 font table and glyph range |
 | `include/ui/icons.h` | Reserved 1-bit icon structure for the M8 icon set |
 | `include/input/touch.h` | `ITouch` interface + `Xpt2046Touch` (works with HR2046) |
 | `include/input/calibration.h` | 4-point affine calibration |
+| `include/input/orientation.h` | Canonical rotation-2 ↔ display 0/2 mapping |
 | `include/display/ili9488.h` | SPI init, window, RGB666 expansion, flush |
 | `include/display/gfx.h` | Lines, rects, circles, text, clipping |
 | `include/net/net.h` | Wi-Fi state machine, ArduinoOTA lifecycle |
@@ -193,8 +205,8 @@ Rule: `Paint`, `Storage` codecs, and geometry helpers must be **Arduino-free** s
 | Item | Bytes | Notes |
 |---|---:|---|
 | 320×480 RGB565 framebuffer | 307,200 | Full screen, including UI |
-| Undo ring (32 tiles × 32×32×2 B) | 65,536 | Grows/shrinks by action; see §5.5 |
-| Display line buffer (480×3 B) | 1,440 | Sized for landscape rotation; single buffer until DMA |
+| Undo pool (44 RLE + 7 raw records) | 65,536 | One action may use all 51 records; see §5.5 |
+| Display line buffer (480×3 B) | 1,440 | 480 px maximum width; single buffer until DMA |
 | UI state, fonts, icons | ≈ 8,000 | Flash-resident assets |
 | Wi-Fi + lwIP buffers | ≈ 50,000 | Measure in M7; may vary |
 | Stacks (2 cores) + heap headroom | ≈ 40,000 | |
@@ -231,7 +243,7 @@ loop():
 
 - Divide the canvas into 32×32 tiles (10×14 = 140 tiles for 320×432).
 - On the first write to a tile during an action, copy the tile into the current action buffer.
-- Cap the whole undo ring at 32 tiles (64 KB). Snapshot tiles lazily; when the ring is full, evict the oldest action. Typical small strokes use 1–3 tiles, so ~10 actions fit at normal use.
+- Cap the whole undo ring at 51 tile records (~64 KB) and allow one action to use all of them; snapshot tiles lazily and evict the oldest action when the ring is full. Typical small strokes use 1–3 tiles, so ~10 actions fit at normal use.
 - Flood fill / clear can touch every tile. For those, store a compressed RLE snapshot of the **pre-action** canvas instead; flat areas compress extremely well. If the snapshot exceeds the budget, disable undo for that one action and show a toast.
 - On undo/redo, restore pixels and mark the affected bounding box dirty.
 - Free the undo buffer during OTA to make room for network buffers.
@@ -304,7 +316,7 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 - [x] M1-2 Add `board_build.filesystem_size = 2m`; verify LittleFS reports the expected size. *On-device: `total=2097152 used=8192 free=2088960`.*
 - [x] M1-3 Add environments:
   - `pico2w_usb` — normal USB upload (`upload_protocol = picotool`)
-  - `pico2w_ota` — `upload_protocol = espota`, `upload_port = ${sysenv.PAINT_OTA_IP}`, `upload_flags = --port=2040 --auth=${sysenv.PAINT_OTA_PASSWORD}`
+  - `pico2w_ota` — `upload_protocol = espota`, `upload_port = ${sysenv.PAINT_OTA_IP}`, `upload_flags = --auth=${sysenv.PAINT_OTA_PASSWORD}` (`espota` already receives `-p 2040` from PlatformIO)
   - `native` — host unit tests, `test_framework = unity`
   - `pico2w_diag` — optional hardware diagnostics build
 - [x] M1-4 Add `include/config.h` (pins, dimensions, limits) and `include/version.h` (`PAINT_VERSION`, build timestamp).
@@ -324,7 +336,7 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 **Goal:** correct, reasonably fast pixels on the ILI9488.
 
 - [x] M2-1 Implement `Ili9488` driver: reset, init sequence, sleep-out, `COLMOD = 0x66` (18-bit), inversion setting, display-on. *Implemented following the TFT_eSPI ILI9488 sequence; the extra `0x21` inversion command was removed because `0xB4=0x02` already handles inversion. Hardware pending.*
-- [x] M2-2 Implement rotation via MADCTL (test all four values); default **portrait 320×480**. *Implemented: `0x48`, `0x28`, `0x88`, `0xE8`. The module is mounted 180° from the native portrait view, so the default is `config::kDisplayRotation = 2` (`0x88`); all four values still need a visual check.*
+- [x] M2-2 Implement rotation via MADCTL (test all four values); default **portrait 320×480**. *Implemented: `0xC8` (portrait 180°), `0x28` (landscape), `0x88` (portrait upright), `0xE8` (landscape 180°). The module is mounted 180° from the native portrait view, so the default is `config::kDisplayRotation = 2` (`0x88`). M8 uses rotation `2` and the true 180° `0xC8` value; the two landscape values are retained in the driver but are not exposed by the UI. The upright and flipped portrait values still need a visual check on hardware.*
 - [x] M2-3 Implement `setAddrWindow(x, y, w, h)` and `pushPixelsRGB565()` with RGB565→RGB666 conversion in a line buffer. *Implemented as `setAddrWindow` + `flush` with a 480×3-byte line buffer.*
 - [x] M2-4 Implement `gfx`: fillRect, hline/vline, Bresenham line, circle, clipped blit, 5×7 bitmap text (integer scaling). *Implemented; font is the classic Adafruit 5×7 table (BSD).*
 - [x] M2-5 Implement dirty-rect merging and banded flush with watchdog feeding. *`DirtyRegion` now keeps up to eight disjoint rectangles (merging overlaps), and each is flushed independently with `rp2040.wdt_reset()` every 16 rows. The UI uses this in M3; canvas integration lands in M4.*
@@ -368,13 +380,13 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 - [x] M4-3 Stamp brushes along interpolated segments (no gaps at fast swipes); support fractional stepping. *`strokeBrush` steps at `max(1, diameter/8)` and always stamps both endpoints; native tests verify continuity and clipping.*
 - [x] M4-4 Implement eraser (paints paper white) with the same sizes. *The eraser uses the same brush masks and `config::kPaperColor`; enabled in the canvas UI.*
 - [x] M4-5 Build the palette: 24 default colours + recently used; 6×4 swatch grid. *Five recent colours occupy the palette title row; selecting a recent swatch moves it to the front.*
-- [x] M4-6 Implement the HSV colour picker (hue slider + saturation/value square) with a live preview. *Bottom sheet with hue bar, 64×48-cell S/V square, preview, H/S/V readout, Cancel/Use; tapping a control repaints only its paint bounds plus preview/readout (clipped cell drawing), not the whole sheet.*
+- [x] M4-6 Implement the HSV colour picker (hue slider + saturation/value square) with a live preview. *Bottom sheet with hue bar, 32×32-cell S/V square, preview, H/S/V readout, Cancel/Use; tapping a control repaints only its affected marker bounds plus preview/readout (clipped cell drawing), not the whole sheet.*
 - [x] M4-7 Implement undo/redo per §5.5 (tile snapshots, action ring, toast when an action is too large). *Fixed ~64 KB pool with 44 RLE + 7 raw tile records, up to 16 actions; captures per dab, converts to XOR deltas at commit, evicts the oldest action when full, and toasts when an action cannot be captured.*
 - [x] M4-8 Implement "New / Clear canvas" with confirmation. *Menu → New canvas opens `Sheet::ConfirmNew`; Cancel returns, Clear requests a canvas reset, clears undo/redo and shows a toast.*
 - [x] M4-9 Add brush-size picker with visual circles. *Size sheet with seven circles and labels; top-bar size icon reflects the active diameter.*
 - [x] M4-10 Profile: stroke latency, fps for 1/8/24 px brushes, undo memory high-water mark. *Hardware-profiled 2026-10-24: 1 px ~139–152 µs/frame, 8 px ~143–153 µs, 24 px ~648–681 µs; first-dab flush 0.33–1.0 ms; 5 dots = 11 records / 1,372 B; heap flat at 57,008 B (normal) and 56,904 B (diag) for 5+ minutes. Long 8/24 px squiggles hit the 32-tile cap; HSV taps 90–103 ms. Follow-ups M4-11/M4-12.*
-- [ ] M4-11 (follow-up) Raise or restructure the per-action undo tile cap. *A 3.5 s 8 px squiggle and a 4.2 s 24 px squiggle exceeded 32 tile records and could not be undone; a 3.9 s 1 px stroke used 31 records / 4,560 B. Consider 48–51 tiles/action (+1–1.2 KB static RAM) or a compact action-level representation.*
-- [ ] M4-12 (follow-up) Reduce HSV repaint cost. *Hue tap 102.8 ms (S/V square 58.4 ms), S/V tap 90.3 ms, HSV open 179.1 ms. Clip the S/V cell loops to the dirty band first, then consider 32×32 cells or a direct full-sheet compose if still above 50 ms.*
+- [x] M4-11 (follow-up) Raise or restructure the per-action undo tile cap. *Implemented: `kMaxTilesPerAction` is the full 51-record pool (up from 32), so the newest long stroke can evict older actions instead of being refused. Native tests cover a 40-tile action and the 52-tile overflow path. Static RAM rises by ~1.2 KB (measured build +784 B overall); a hardware re-run of the 3.5 s 8 px / 4.2 s 24 px squiggles is pending.*
+- [x] M4-12 (follow-up) Reduce HSV repaint cost. *Implemented: 32×32 S/V cells, hue/S/V marker-bound dirty regions, and clip-aware painter loops. An S/V tap now repaints ~16k pixels instead of ~49k; a hue tap ~50k instead of ~58k. Pre-change hardware numbers were hue 102.8 ms, S/V 90.3 ms, open 179.1 ms; re-measure on hardware. The full-sheet HSV open remains a ~179 ms overlay flush.*
 
 **Acceptance:** continuous strokes with no gaps; 10 undo levels for normal strokes; 8 px brush ≥30 fps; free heap stable after 5 minutes of drawing.
 
@@ -391,11 +403,13 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 - [x] M5-3 Ellipse tool (outline; optional filled).
 - [x] M5-4 Scanline flood fill (4-connected, exact RGB565 match, clipped to canvas).
 - [x] M5-5 Eyedropper: sample canvas pixel, set as current colour, show a toast.
-- [ ] M5-6 Tool options row: size + filled/outline for shapes.
+- [x] M5-6 Tool options row: size + filled/outline for shapes. *The enlarged tools sheet has a contextual row: Size opens the brush-size sheet, and Outline/Filled toggle filled rectangle and ellipse commits. Filled previews show the boundary while dragging (commit fills with one undoable action) to avoid a second framebuffer; outline/filled are disabled for non-shape tools.*
 - [x] M5-7 Ensure every tool action is undoable (including fill via RLE snapshot).
-- [ ] M5-8 Handle edge cases: start/end outside canvas, drag over toolbar, rotation changes, interrupted touch.
+- [x] M5-8 Handle edge cases: start/end outside canvas, drag over toolbar, rotation changes, interrupted touch. *`ui_layout::clampCanvasPoint()` clamps start/move points and is covered by native tests; releasing a shape over the toolbar cancels it instead of committing; opening a sheet or changing screen cancels any in-flight stroke/shape. Rotation remains locked to 2, so live rotation changes are out of scope until M8.*
 
 **Acceptance:** preview leaves no residue after cancel; fill never escapes the canvas; picker returns the exact colour; all tools undo correctly.
+
+**Status (2026-10-25): implemented; hardware validation pending.** The native suite covers shape preview/cancel, outline and filled commit/undo for rectangles and ellipses, flood fill inside/outside an outline and the no-op path, canvas clamping, the tool-options flow and the filled-mode toggle. Filled previews deliberately show only the boundary; commit fills and records one undo action. Re-run the tools, fill and options flow on hardware to confirm touch sizing and visual polish.
 
 ---
 
@@ -403,18 +417,18 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 
 **Goal:** drawings survive power loss and are easy to browse.
 
-- [ ] M6-1 Implement CRC32 and the RLE codec with unit tests (round-trip, worst case, corrupt input).
-- [ ] M6-2 Implement the `.pnt` format (Appendix A): header, RLE payload, embedded 64×86 thumbnail.
-- [ ] M6-3 Implement atomic saves (`.tmp` → rename) and refuse to overwrite a valid file with a corrupt one.
-- [ ] M6-4 Implement save / save-as / load / delete with clear confirmation dialogs.
-- [ ] M6-5 Implement the gallery: paged 2×2 thumbnail grid, file names, empty state, long-press delete.
-- [ ] M6-6 Implement autosave every 15 s after changes; recovery prompt on boot; delete autosave after a clean save.
-- [ ] M6-7 Implement free-space gauge and OTA headroom guard (keep ≥700 KB free for firmware staging).
-- [ ] M6-8 Persist config: rotation, brightness, touch calibration, last-opened file, flags.
-- [ ] M6-9 Add a storage diagnostics page (total/used/free, file count, mount status).
-- [ ] M6-10 Test 20 save/load cycles and a simulated power cut during save.
+- [x] M6-1 Implement CRC32 and the RLE codec with unit tests (round-trip, worst case, corrupt input). *`paint/crc32.h` implements IEEE CRC-32 with incremental updates; `paint/codec_rle.{h,cpp}` encodes 16-bit run/literal tokens and strictly rejects zero-length tokens, truncation, overruns and trailing bytes. Native tests cover known vectors, incremental chaining, mixed runs/literals, an alternating worst case, capacity failure and corrupt streams.*
+- [x] M6-2 Implement the `.pnt` format (Appendix A): header, RLE payload, embedded 64×86 thumbnail. *`paint/pnt.{h,cpp}` defines the 32-byte header (`PNT1`, version, flags, dimensions, RLE length, thumbnail offset, CRC32), streams row-chunked RLE plus a nearest-neighbour 64×86 thumbnail, and verifies magic/version/flags/reserved bytes/layout/CRC before decoding. Tests cover a pixel-identical 320×432 round-trip, thumbnail sampling and corrupt/truncated files.*
+- [x] M6-3 Implement atomic saves (`.tmp` → rename) and refuse to overwrite a valid file with a corrupt one. *`storage/pnt_file.{h,cpp}` writes `/paint/imgNNNN.tmp`, flushes/closes, re-reads the header, size, CRC32 and RLE structure, and only then renames over the destination. A failed verification removes the temp file and leaves an existing good file untouched. `loadPnt()` verifies CRC before writing any canvas pixels. The atomic path was exercised on hardware as part of M6-10.*
+- [x] M6-4 Implement save / save-as / load / delete with clear confirmation dialogs. *The menu separates Save and Save as. Save overwrites the current `imgNNNN.pnt`; an unnamed document and Save as both ask `PaintFileIndex::nextName()` for a free name, then show a Cancel/Save sheet. Gallery taps require Open confirmation and warn when the canvas is dirty; long-press requires Delete confirmation. Main owns the filesystem writes, updates the document name/dirty state and reports failures without leaving a half-written file.*
+- [x] M6-5 Implement the gallery: paged 2×2 thumbnail grid, file names, empty state, long-press delete. *`storage/paint_files` scans and sorts up to 32 `.pnt` files; the UI renders 2×2 pages with names, prev/next arrows, a page counter and a "No drawings yet" state. Thumbnails are streamed from the file in 128 B source rows through a UI callback, so no 11 KB-per-thumbnail cache is needed. Long-press opens the delete dialog; a successful delete refreshes the grid and clears the document name if the open file was removed.*
+- [x] M6-6 Implement autosave every 15 s after changes; recovery prompt on boot; delete autosave after a clean save. *`paint::AutosaveTimer` arms on the first change, writes `/paint/autosave.pnt` at most once per interval while changes are pending, and does not rewrite an idle dirty document. The gallery skips it. Boot validation reuses the header/dimensions/size/CRC/RLE checker; valid autosaves show Restore/Discard, restore as an unnamed dirty document, and are removed after a clean save, load, New canvas or explicit discard. Failed saves/recovery keep the file. Shape previews and active strokes are never autosaved. Recovery was exercised on hardware in M6-10; long-term flash wear remains a follow-up.*
+- [x] M6-7 Implement free-space gauge and OTA headroom guard (keep ≥700 KB free for firmware staging). *`storage::StorageStats` exposes used/free space, used percentage and `otaHeadroom()` with `kOtaHeadroomBytes = 716,800`. `Storage` now wraps LittleFS mount/stats/format. Settings draws a live gauge (free KB, used percentage, OK/LOW reserve) and the Wi-Fi & OTA menu refuses below the reserve. Saves below the reserve still work but warn, so unsaved art can be rescued. M7 now gates the OTA server on the same threshold and lets `Update.begin()` reject an incoming image that cannot be staged.*
+- [x] M6-8 Persist config: rotation, brightness, touch calibration, last-opened file, flags. *`storage/settings_codec.h` v2 uses a 44-byte payload: four one-byte fields (rotation, brightness, OTA enable, flags), the six int32 calibration coefficients and a zero-padded 16-byte bare filename. v1 28-byte configs migrate with empty `lastOpened` and zero `flags`. Successful saves/loads update the name; New, deleting the open file and recovery actions clear it. Rotation/brightness remain persisted for the M8 settings screen and are not applied by the public UI yet.*
+- [x] M6-9 Add a storage diagnostics page (total/used/free, file count, mount status). *Settings → Storage details renders mount status, total/used/free KB, used percentage, the real picture count from `PaintFileIndex::totalCount()` and the OTA reserve. The count includes files beyond the 32-entry gallery index. The screen has a back path to Settings and refreshes storage stats on entry.*
+- [x] M6-10 Test 20 save/load cycles and a simulated power cut during save. *The M6 build was flashed and the save/load/gallery, autosave recovery, storage gauge, config-migration and diagnostics flows were confirmed working by the hardware owner on 2026-10-26. Long-term flash wear and an instrumented timing run remain follow-ups, not blockers for M7.*
 
-**Acceptance:** pixel-identical round-trip; corrupt files rejected without crashing; gallery opens images in <1 s; autosave restores after reset; no filesystem corruption after 20 cycles.
+**Acceptance:** pixel-identical round-trip; corrupt files rejected without crashing; gallery opens images in <1 s; autosave restores after reset; no filesystem corruption after 20 cycles. **M6 hardware validation passed; the M7 work builds on the same storage paths.**
 
 ---
 
@@ -424,23 +438,26 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 
 **How it works (answering the OTA question):** arduino-pico includes `ArduinoOTA` and an OTA bootloader. The sketch starts Wi-Fi, calls `ArduinoOTA.begin()` and `ArduinoOTA.handle()`. PlatformIO then uploads with `upload_protocol = espota` exactly like an ESP32. The new image is staged in LittleFS, verified (MD5), and flashed by the bootloader on reboot.
 
-- [ ] M7-1 Implement a non-blocking Wi-Fi state machine (connect timeout 10 s, retry every 30 s, offline mode).
-- [ ] M7-2 Add Wi-Fi status to the UI (off / connecting / connected + RSSI).
-- [ ] M7-3 Configure `ArduinoOTA`: hostname `pico-paint`, password from `PAINT_OTA_PASSWORD`, port 2040.
-- [ ] M7-4 Register callbacks: onStart (autosave, free undo memory, show overlay), onProgress (draw % bar), onEnd, onError (show message, return to canvas).
-- [ ] M7-5 Add an OTA preflight: check free LittleFS space against the incoming size; refuse with a clear message if too low.
-- [ ] M7-6 Add a "Wi-Fi & OTA" settings screen: IP, hostname, RSSI, server state, enable/disable toggle.
-- [ ] M7-7 Wire up the `pico2w_ota` environment and document:
+- [x] M7-1 Implement a non-blocking Wi-Fi state machine (connect timeout 10 s, retry every 30 s, offline mode). *`Net` in `net/net.{h,cpp}` has Disabled/Offline/Connecting/Connected/OtaActive states, a 10 s connect timeout, 30 s background retries, optional static IP/DHCP, and no blocking waits. An empty SSID skips the wireless stack entirely and keeps the app offline; disabling the feature turns the radio off.*
+- [x] M7-2 Add Wi-Fi status to the UI (off / connecting / connected + RSSI). *The Network screen shows off/connecting/connected/OTA-active/offline state, configured credentials, IP, hostname/port, RSSI, OTA-server state, reserve state and the last error. RSSI refreshes once per second and dirties only the `320×28` signal row.*
+- [x] M7-3 Configure `ArduinoOTA`: hostname `pico-paint`, password from `PAINT_OTA_PASSWORD`, port 2040. *`Net::startServer()` sets the hostname from `PAINT_OTA_HOSTNAME`, port 2040 (`kOtaPort`) and the optional `PAINT_OTA_PASSWORD`; it logs `pico-paint.local:2040`. The server starts only after Wi-Fi association and stops on disable/disconnect.*
+- [x] M7-4 Register callbacks: onStart (autosave, free undo memory, show overlay), onProgress (draw % bar), onEnd, onError (show message, return to canvas). *`onStart` closes any sheet, cancels an active stroke/shape, writes a dirty-document autosave, clears the fixed undo pool and paints the overlay. The start/progress paths preserve the framebuffer canvas (rather than composing paper over it), so a failed update returns to the drawing; the splash/recovery prompts stay visible underneath. `onProgress` repaints the `280×144` panel directly because `ArduinoOTA.handle()` blocks. `onEnd` paints 100% before reboot. `onError` records a flag in the callback (auth errors can run in the lwIP context); the main loop returns to the canvas with a toast. Autosave failure does not abort the update.*
+- [x] M7-5 Add an OTA preflight: check free LittleFS space against the incoming size; refuse with a clear message if too low. *`Net` starts the OTA server only when free LittleFS is at least the existing `kOtaHeadroomBytes` (700 KB). The Network screen shows `OTA reserve: OK/LOW` and pauses the server when low. `Update.begin()` performs the final incoming-image check against the staging file; a refusal is reported through `OTA begin failed`. The current image is ~506 KB, so the reserve leaves staging headroom.*
+- [x] M7-6 Add a "Wi-Fi & OTA" settings screen: IP, hostname, RSSI, server state, enable/disable toggle. *`Screen::Network` is opened by menu item 5 and shows all requested fields plus credentials, reserve and last OTA error. The toggle persists `Settings.otaEnabled`; it is disabled without credentials, during an OTA, and when enabling with low storage. Disabling stops the server and radio.*
+- [x] M7-7 Wire up the `pico2w_ota` environment and document:
   ```bash
   export PAINT_OTA_IP=192.168.1.42
   export PAINT_OTA_PASSWORD='…'
   pio run -e pico2w_ota -t upload
   ```
-- [ ] M7-8 Add a version banner (`PAINT_VERSION`, build time) on splash/About and in the serial log.
-- [ ] M7-9 Test 10 consecutive OTA updates; check drawings survive.
+  *`platformio.ini` uses `espota` with the environment-provided IP/password; PlatformIO's espota command already includes `-p 2040`, and `upload_flags` carries only `--auth=...` because PlatformIO forwards that value as one argument. `README.md`, `docs/ota.md` and `tools/ota_windows.sh` cover configuration, static IPs, the on-device server check, failure behaviour, security and recovery. On WSL2, use the helper because ArduinoOTA's reverse TCP connection cannot reach a WSL listener through the Windows LAN address. Set both variables for upload; a build without them still succeeds.*
+- [x] M7-8 Add a version banner (`PAINT_VERSION`, build time) on splash/About and in the serial log. *The existing `version.h` banner remains in the serial log and About; the splash shows the version and the About stage text now reads `M8 settings + recovery`. `PAINT_OTA_HOSTNAME`, `PAINT_OTA_PASSWORD` and the static-IP fields are documented in `secrets.example.h`.*
+- [ ] M7-9 Test 10 consecutive OTA updates; check drawings survive. *From WSL2, upload with `tools/ota_windows.sh`; the plain PlatformIO uploader authenticates but cannot receive the Pico's reverse TCP connection. A first OTA upload completed successfully through the helper on 2026-10-26; the ten-cycle run is still pending.*
 - [ ] M7-10 Test failure paths: wrong password, Wi-Fi loss mid-update, power loss mid-update, insufficient space.
 - [ ] M7-11 Verify USB recovery still works after a failed OTA.
-- [ ] M7-12 Document security: password-protected, LAN-only; optional signed firmware as a stretch goal.
+- [x] M7-12 Document security: password-protected, LAN-only; optional signed firmware as a stretch goal. *`docs/ota.md` documents the OTA password, trusted-LAN requirement, the lack of signed firmware, and USB/BOOTSEL recovery. Signed firmware and HTTP/rollback remain future work.*
+
+**Status (2026-10-26): M7-1–M7-8 implemented and native-tested; M7-12 documented; a first OTA upload is confirmed working through `tools/ota_windows.sh`; M7-9–M7-11 hardware validation remains.** The native suite is now **75/75** after the M8 additions (it was 70/70 at the M7 stage), including the Network-screen toggle and its disabled/low-storage paths. The three firmware environments build. Current sizes with a populated `secrets.h`: `pico2w_usb` RAM **164,692 B**, flash **505,940 B**; `pico2w_ota` RAM **164,692 B**, flash **505,940 B**; `pico2w_diag` RAM **164,792 B**, flash **507,204 B**. The estimated free heap is **31,916 B** after the framebuffer and overlay scratch; the boot log now prints `[mem] free heap before net` and `[mem] free heap` so the real wireless cost can be recorded. lwIP's 16,403 B `ram_heap` and 36,771 B PBUF pool are already in the static RAM figure.
 
 **Acceptance:** wireless update succeeds without USB; drawings/config preserved; failed update does not brick the device; paint app works normally when Wi-Fi is unavailable; update completes in <60 s on LAN.
 
@@ -452,17 +469,19 @@ Estimates are rough solo-developer days and assume hardware is on the bench.
 
 **Goal:** make it feel finished and recoverable.
 
-- [ ] M8-1 Settings screen: rotation, brightness, touch recalibration, Wi-Fi/OTA toggle, storage info, About.
-- [ ] M8-2 Idle behaviour: dim backlight after 60 s, screen off after 5 min, wake on touch.
-- [ ] M8-3 Boot-health counter: increment on boot, clear after 5 s of healthy running; after 3 bad boots show a recovery screen (skip Wi-Fi/autosave, offer diagnostics).
-- [ ] M8-4 Splash screen with logo/version; skip on touch hold.
-- [ ] M8-5 Error surfaces: filesystem mount failure, display init failure, low storage, OTA errors.
-- [ ] M8-6 Polish visuals: consistent icon set, pressed states, modal dimming, toasts, no flicker on screen changes.
-- [ ] M8-7 Add screenshots/UI mockups and a short user guide to `docs/`.
-- [ ] M8-8 Accessibility pass: 44 px targets, high contrast, no colour-only status indicators.
-- [ ] M8-9 Add a "recovery mode" entry point (hold touch at boot) with display/touch/storage tests.
+- [x] M8-1 Settings screen: rotation, brightness, touch recalibration, Wi-Fi/OTA toggle, storage info, About. *Source complete. The full-screen Settings page has a 44 px rotation row (upright/flipped portrait only), four brightness steps (25/50/75/100%), the Wi-Fi/OTA toggle, Calibrate, Storage, About and Wi-Fi info. Rotation and brightness are saved to `/config.bin` and applied immediately. Touch calibration is still stored in canonical rotation-2 space and flipped for rotation 0.*
+- [x] M8-2 Idle behaviour: dim backlight after 60 s, screen off after 5 min, wake on touch. *Source complete. `IdleController` dims at 60 s, turns the backlight off at 5 min and consumes the first press after off so it cannot activate a hidden control. Calibration, recovery tests and an active OTA keep the panel awake.*
+- [x] M8-3 Boot-health counter: increment on boot, clear after 5 s of healthy running; after 3 bad boots show a recovery screen (skip Wi-Fi/autosave, offer diagnostics). *Source complete. `/boot.health` is an 8-byte `'P','B'`/version/count/CRC32 blob; three consecutive bad boots enter safe mode. A normal boot clears it after 5 s; Continue/Restart clear it from recovery. Safe mode skips Wi-Fi and autosave.*
+- [x] M8-4 Splash screen with logo/version; skip on touch hold. *Source complete. The splash shows the palette mark, version, tagline and `Hold to skip`; the 800 ms timeout still guarantees boot, and a long-press skips it.*
+- [x] M8-5 Error surfaces: filesystem mount failure, display init failure, low storage, OTA errors. *Source complete. Boot toasts cover `Storage unavailable`, `Display init failed` and `OTA reserve low`; OTA callbacks already surface `OTA auth failed`, begin/connect/receive/end errors. Saves below the reserve still succeed with an `OTA low` warning.*
+- [x] M8-6 Polish visuals: consistent icon set, pressed states, modal dimming, toasts, no flicker on screen changes. *Source complete. Existing vector icons are reused, Settings/self-test rows have pressed and disabled states, gallery dialogs dim the background, and placeholder screens recompose once instead of flashing. Rotation on a placeholder recomposes the whole screen in the new orientation; on the canvas it re-flushes the preserved canvas framebuffer.*
+- [x] M8-7 Add screenshots/UI mockups and a short user guide to `docs/`. *`docs/user-guide.md` covers boot, top bar, tools, saving, gallery, settings, idle, OTA and recovery. SVG mockups are in `docs/mockups/` and linked from the guide.*
+- [x] M8-8 Accessibility pass: 44 px targets, high contrast, no colour-only status indicators. *Source complete. Primary targets are 44 px or larger, including the new Settings and recovery controls; storage/Wi-Fi/battery-style status is always written as text (`OK`/`FAIL`, `On`/`Off`, `Connected`, `OTA reserve: OK/LOW`) in addition to colour.*
+- [x] M8-9 Add a "recovery mode" entry point (hold touch at boot) with display/touch/storage tests. *Source complete. Holding touch through power-on enters `Screen::SafeMode`; the screen offers Display test, Touch test (mapped and raw coordinates), Storage details, Continue and Restart. The same screen is used for boot-health recovery.*
 
-**Acceptance:** all settings persist; idle dim/wake works; docs are sufficient for someone else to build and use it; recovery mode is reachable.
+**Status (2026-10-26): M8-1–M8-9 source complete and native-tested; M8 hardware acceptance remains pending.** The native suite passes **75/75** with new orientation/idle tests, boot-health codec/threshold tests, Settings navigation/request tests, safe-mode self-test tests and 44 px target checks. Builds: `pico2w_usb` RAM **164,692 B**, flash **505,940 B**; `pico2w_ota` RAM **164,692 B**, flash **505,940 B**; `pico2w_diag` RAM **164,792 B**, flash **507,204 B**. The source is not a hardware sign-off: rotation 0 (true 180° MADCTL), touch mapping after rotation, brightness/idle wake, persistence, boot-health counting, safe-mode entry and all three self-tests still need a device run.
+
+**Acceptance (source):** all settings persist in `/config.bin`; idle dim/off/wake is implemented; docs and mockups are present; recovery mode is reachable by boot-health or hold-touch. **Hardware acceptance remains:** verify the same points on the Pico, including the flipped display/touch mapping and the boot-health loop.
 
 ---
 
@@ -547,7 +566,7 @@ upload_protocol = picotool
 extends = env:pico2w_usb
 upload_protocol = espota
 upload_port = ${sysenv.PAINT_OTA_IP}
-upload_flags = --port=2040 --auth=${sysenv.PAINT_OTA_PASSWORD}
+upload_flags = --auth=${sysenv.PAINT_OTA_PASSWORD}
 
 [env:native]
 platform = native
@@ -559,7 +578,7 @@ Notes:
 
 - First flash **must** be over USB (`pio run -e pico2w_usb -t upload`) with `ArduinoOTA` compiled in; every later update can be wireless.
 - `upload_port` can be an IP or `pico-paint.local`; IP is more reliable on Windows.
-- If PlatformIO's uploader uses the wrong default port, add `--port=2040` to `upload_flags`.
+- PlatformIO's espota uploader already passes `-p 2040`, and it forwards the whole `upload_flags` value as one argument. Keep `upload_flags` to the single `--auth=...` option; do not add a second flag there.
 - The OTA image is the normal `.bin`; no special build is needed, but the filesystem must have room to stage it.
 - Never OTA a filesystem image in production — it would erase the gallery. Sketch-only updates preserve LittleFS.
 
@@ -685,7 +704,7 @@ Little-endian.
 
 **Autosave:** `/paint/autosave.pnt`, written only after a change, every 15 s. Deleted after a clean save or explicit discard.
 
-**Config:** `/config.bin` with magic `PCFG`, version, rotation, brightness, touch affine coefficients (Q16.16), last-opened file index, flags, CRC.
+**Config:** `/config.bin` with magic `PCFG`, version 2, a 44-byte payload (rotation, brightness, OTA enable, flags, six calibration coefficients as int32, 16-byte bare last-opened filename) and an FNV-1a checksum. Version 1 28-byte payloads are still decoded and migrate with empty `lastOpened`/`flags`.
 
 ---
 

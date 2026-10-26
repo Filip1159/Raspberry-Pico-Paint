@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="480" viewBox="0 0 320 480">
+  <rect width="320" height="480" fill="#1c1c22"/>
+  <rect x="0" y="0" width="320" height="48" fill="#1c1c22"/>
+  <line x1="0" y1="47" x2="320" y2="47" stroke="#404048" stroke-width="1"/>
+  <g fill="#30303a" stroke="#50505a" stroke-width="1">
+    <rect x="18" y="2" width="44" height="44" rx="3"/>
+    <rect x="66" y="2" width="44" height="44" rx="3"/>
+    <rect x="114" y="2" width="44" height="44" rx="3"/>
+    <rect x="162" y="2" width="44" height="44" rx="3"/>
+    <rect x="210" y="2" width="44" height="44" rx="3"/>
+    <rect x="258" y="2" width="44" height="44" rx="3"/>
+  </g>
+  <g stroke="#e8e8e8" stroke-width="2" fill="none" stroke-linecap="round">
+    <path d="M30 34 L44 20 M34 36 L48 22"/>
+    <circle cx="88" cy="24" r="8"/>
+    <circle cx="114" cy="24" r="4" fill="#f80000" stroke="none"/>
+    <circle cx="184" cy="24" r="8"/>
+    <path d="M188 20 L184 24 L188 28"/>
+    <circle cx="232" cy="24" r="8"/>
+    <path d="M228 20 L232 24 L228 28"/>
+    <path d="M272 18 H286 M272 24 H286 M272 30 H286"/>
+  </g>
+  <rect x="0" y="48" width="320" height="432" fill="#ffffff"/>
+  <g fill="none" stroke-linecap="round">
+    <circle cx="160" cy="208" r="62" stroke="#f8a000" stroke-width="8"/>
+    <path d="M92 330 Q150 250 228 318" stroke="#0088ff" stroke-width="12"/>
+    <circle cx="120" cy="160" r="18" fill="#00c040" stroke="none"/>
+  </g>
+  <text x="160" y="430" text-anchor="middle" font-family="monospace" font-size="12" fill="#808088">Drawing canvas — 320 × 432</text>
+</svg>

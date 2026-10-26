@@ -27,7 +27,13 @@ class UndoStack {
   static constexpr int kMaxTileRecords = kRleRecords + kRawRecords;
   static constexpr int kRleMaxBytes = 1024;
   static constexpr int kMaxActions = 16;
-  static constexpr int kMaxTilesPerAction = 32;
+  // Long multi-second squiggles touch more than 32 tiles. Allow one action to
+  // use the whole 51-record pool; older actions are evicted as needed, which is
+  // preferable to refusing the newest stroke. A single action touching more
+  // than every tile still overflows safely instead of corrupting history.
+  static constexpr int kMaxTilesPerAction = kRleRecords + kRawRecords;
+  static_assert(kMaxTilesPerAction <= kMaxTileRecords,
+                "one action cannot reference more records than the pool holds");
   static constexpr int kTilesX =
       (config::kCanvasWidth + config::kTileSize - 1) / config::kTileSize;
   static constexpr int kTilesY =

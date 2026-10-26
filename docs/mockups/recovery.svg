@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="480" viewBox="0 0 320 480">
+  <rect width="320" height="480" fill="#0c0c12"/>
+  <rect x="0" y="0" width="320" height="48" fill="#1c1c22"/>
+  <line x1="0" y1="47" x2="320" y2="47" stroke="#404048"/>
+  <text x="160" y="29" text-anchor="middle" font-family="monospace" font-size="18" fill="#e8e8e8">Recovery mode</text>
+
+  <rect x="20" y="64" width="280" height="392" rx="4" fill="#2a2a32" stroke="#00c8ff"/>
+  <g font-family="monospace" text-anchor="middle">
+    <text x="160" y="94" font-size="16" fill="#e8e8e8">Safe mode</text>
+    <text x="160" y="116" font-size="11" fill="#a0a0a8">Wi-Fi and autosave are off</text>
+  </g>
+
+  <g font-family="monospace" font-size="14" fill="#e8e8e8">
+    <text x="40" y="143">Display: OK</text>
+    <text x="40" y="165">Touch: OK</text>
+    <text x="40" y="187" fill="#f04040">Storage: FAIL</text>
+  </g>
+
+  <g font-family="monospace" font-size="14" fill="#e8e8e8" text-anchor="middle">
+    <rect x="32" y="200" width="256" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+    <text x="160" y="228">Display test</text>
+    <rect x="32" y="252" width="256" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+    <text x="160" y="280">Touch test</text>
+    <rect x="32" y="304" width="256" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+    <text x="160" y="332">Storage test</text>
+    <rect x="32" y="388" width="120" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+    <text x="92" y="416">Continue</text>
+    <rect x="168" y="388" width="120" height="44" rx="3" fill="#30303a" stroke="#50505a"/>
+    <text x="228" y="416">Restart</text>
+  </g>
+</svg>

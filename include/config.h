@@ -3,6 +3,7 @@
 // Compile-time configuration shared by the whole firmware.
 // Keep this file free of Arduino dependencies so native unit tests can use it.
 
+#include <cstddef>
 #include <cstdint>
 
 // ---------------------------------------------------------------------------
@@ -14,10 +15,34 @@
 #  if __has_include("secrets.h")
 #    include "secrets.h"
 #  else
-#    include "secrets.example.h"
+#    include "secrets.h"
 #  endif
 #else
 #  include "secrets.example.h"
+#endif
+
+// Keep older/custom secrets.h files (which may predate the OTA/static-IP
+// fields) buildable with safe defaults.
+#ifndef PAINT_WIFI_SSID
+#  define PAINT_WIFI_SSID ""
+#endif
+#ifndef PAINT_WIFI_PASSWORD
+#  define PAINT_WIFI_PASSWORD ""
+#endif
+#ifndef PAINT_OTA_HOSTNAME
+#  define PAINT_OTA_HOSTNAME "pico-paint"
+#endif
+#ifndef PAINT_OTA_PASSWORD
+#  define PAINT_OTA_PASSWORD ""
+#endif
+#ifndef PAINT_STATIC_IP
+#  define PAINT_STATIC_IP "0.0.0.0"
+#endif
+#ifndef PAINT_GATEWAY
+#  define PAINT_GATEWAY "0.0.0.0"
+#endif
+#ifndef PAINT_SUBNET
+#  define PAINT_SUBNET "255.255.255.0"
 #endif
 
 namespace paint::config {
@@ -79,9 +104,35 @@ constexpr int kDefaultBrushSize = 8;
 constexpr uint16_t kPaperColor = 0xFFFF;  // RGB565 white
 
 // ---------------------------------------------------------------------------
-// OTA
+// Settings / idle / recovery
 // ---------------------------------------------------------------------------
+constexpr uint8_t kDefaultBrightness = 255;
+constexpr uint8_t kMinBrightness = 64;
+// Four evenly spaced brightness steps keep the Settings screen simple and
+// make every step visibly different on the panel.
+constexpr uint8_t kBrightnessLevels[] = {64, 128, 192, 255};
+constexpr size_t kBrightnessLevelCount =
+    sizeof(kBrightnessLevels) / sizeof(kBrightnessLevels[0]);
+
+constexpr uint32_t kIdleDimMs = 60u * 1000u;      // 60 s
+constexpr uint32_t kIdleOffMs = 5u * 60u * 1000u; // 5 min
+constexpr uint8_t kIdleDimDuty = 32;              // backlight duty while idle
+constexpr uint32_t kBootHealthyMs = 5000;
+constexpr uint8_t kBootFailThreshold = 3;
+
+// ---------------------------------------------------------------------------
+// Wi-Fi / OTA
+// ---------------------------------------------------------------------------
+// The defaults live in secrets.example.h and keep the SSID empty, which makes
+// Net report "not configured" without touching the wireless stack. Copy the
+// example to include/secrets.h to enable wireless OTA.
+constexpr const char* kWifiSsid = PAINT_WIFI_SSID;
+constexpr const char* kWifiPassword = PAINT_WIFI_PASSWORD;
+constexpr const char* kOtaHostname = PAINT_OTA_HOSTNAME;
+constexpr const char* kOtaPassword = PAINT_OTA_PASSWORD;
+constexpr const char* kStaticIp = PAINT_STATIC_IP;
+constexpr const char* kGateway = PAINT_GATEWAY;
+constexpr const char* kSubnet = PAINT_SUBNET;
 constexpr uint16_t kOtaPort = 2040;
-constexpr const char* kOtaHostname = "pico-paint";
 
 }  // namespace paint::config

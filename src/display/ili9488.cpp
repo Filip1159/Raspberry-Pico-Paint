@@ -159,7 +159,10 @@ void Ili9488::setRotation(uint8_t rotation) {
 
   switch (rotation & 0x03) {
     case 0:
-      madctl = 0x48;  // MX + BGR
+      // Both address axes are reversed relative to rotation 2, giving a true
+      // 180-degree portrait flip rather than a mirror image. Touch mapping in
+      // input/orientation.h uses the same full flip.
+      madctl = 0xC8;  // MX + MY + BGR
       width_ = 320;
       height_ = 480;
       break;

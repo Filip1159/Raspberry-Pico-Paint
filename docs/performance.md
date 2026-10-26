@@ -15,25 +15,228 @@ counters and undo-usage reporting.
 
 ### M5 (shapes, fill, eyedropper)
 
-After adding the header-only `ShapePreview` (19 KB bitset), rubber-band
-rasterisers and scanline flood fill, the M5 builds are:
+After adding the header-only `ShapePreview`, rubber-band rasterisers, filled
+shape spans and scanline flood fill, the M5 builds were:
 
 | Environment | RAM | Flash |
 |---|---:|---:|
-| `pico2w_usb` | 159,424 B (30.4%) | 423,056 B (20.2%) |
-| `pico2w_diag` | 159,524 B (30.4%) | 424,328 B (20.3%) |
+| `pico2w_usb` | 160,208 B (30.6%) | 430,212 B (20.6%) |
+| `pico2w_diag` | 160,308 B (30.6%) | 431,492 B (20.6%) |
 
-The `ShapePreview` bitset is `(320*480)/8 = 19,200 B`; the rest is the
-rasteriser code and flood-fill stack. The free-heap budget becomes:
+`ShapePreview` keeps a 2,048-entry saved-pixel buffer (`x/y/colour`, ~12 KB);
+the rest is the rasterisers, the 1,024-point flood-fill stack and the M5 UI
+options row.
+
+### M6-4/M6-5 (save/load/delete + gallery)
+
+Wiring the storage layer into the UI adds a bounded gallery index, the
+document name/dirty state and the paged gallery:
+
+| Environment | RAM | Flash |
+|---|---:|---:|
+| `pico2w_usb` | 161,352 B (30.8%) | 439,300 B (21.0%) |
+| `pico2w_ota` | 161,352 B (30.8%) | 439,300 B (21.0%) |
+| `pico2w_diag` | 161,452 B (30.8%) | 440,588 B (21.0%) |
+
+These are the intermediate M6-4/M6-5 figures; the later M6 sections have the
+current builds. The static increase is ~1.1 KB: 32 gallery names in `Ui`, 32
+names in `PaintFileIndex`, the document/request state and the extra
+menu/dialog code.
+The free-heap estimate is now:
 
 ```
-524,288 - 159,424 (static) - 307,200 (framebuffer) - 20,480 (scratch)
-= 37,184 B
+524,288 - 161,352 (static) - 307,200 (framebuffer) - 20,480 (scratch)
+= 35,256 B
 ```
 
-This is above the 24 KB Wi-Fi minimum but leaves less margin; the M6
-autosave buffer will be allocated from the remaining heap. The diag build
-adds ~100 B for profiling.
+That is still above the 24 KB Wi-Fi minimum. The M6-6 autosave reuses the
+existing streaming save path and adds no pixel buffer. The gallery
+deliberately allocates no thumbnail cache:
+`drawPntThumbnail()` seeks to the embedded 64×86 thumbnail and streams the
+source rows covered by the current 32-row compose band through a 128 B row
+buffer. A page therefore costs at most a few hundred small flash reads, not
+44 KB of RAM for four thumbnails.
+
+The menu grew from six to seven rows (Save and Save as are separate) and
+`menuItemRect()` now uses a 40 px pitch so all seven rows fit inside the
+existing 340 px sheet.
+
+### M6-6–M6-9 (autosave, recovery, storage + config)
+
+The autosave scheduler, modal Recovery screen, storage gauge, settings schema
+and diagnostics screen add no framebuffer-sized allocation. Final builds after
+M6-9 are:
+
+| Environment | RAM | Flash |
+|---|---:|---:|
+| `pico2w_usb` | 161,404 B (30.8%) | 443,380 B (21.2%) |
+| `pico2w_ota` | 161,404 B (30.8%) | 443,380 B (21.2%) |
+| `pico2w_diag` | 161,504 B (30.8%) | 444,652 B (21.2%) |
+
+M6-7 added 16 B of static RAM (`StorageStats` in `Ui`, plus alignment) and about
+944 B of flash for the gauge, menu guard and warning paths. M6-8/M6-9 add
+another 28 B of RAM and about 1.2 KB of flash for the config schema, the Storage
+screen and the real file count.
+
+The final free-heap estimate is:
+
+```
+524,288 - 161,404 (static) - 307,200 (framebuffer) - 20,480 (scratch)
+= 35,204 B
+```
+
+`AutosaveTimer` is a few bytes of scheduler state. Autosave writes
+`/paint/autosave.pnt` through the same 256 B RLE write buffer and atomic
+`.tmp` rename as a normal save; it is deferred while a brush stroke or shape
+preview is active, so rubber-band pixels are never captured. It runs only while
+changes are pending: the first change arms a 15 s deadline, further changes do
+not postpone it, and an idle dirty document is not rewritten.
+
+Boot recovery validates with the existing 512 B RLE read buffer and the normal
+header/size/CRC walk, then keeps the pixels on the canvas only after Restore.
+No second canvas or full-file buffer is allocated. The save/load, gallery,
+autosave-recovery and storage screens were hardware-validated after the M6
+build; long-term flash-wear behaviour still needs a longer soak test. The write
+cadence is bounded by the 15 s timer and stops once the document is clean.
+
+The storage gauge reads `FSInfo` on boot, when Settings opens and after file or
+autosave changes. `StorageStats` is 12 B (three 32-bit sizes); formatting the
+gauge needs one small stack buffer, and a live update dirties only the
+`320×96` gauge area instead of the whole Settings screen. The **700 KB**
+(716,800 B) reserve is a policy check, not a hidden partition: pictures may
+still be saved below it (with an `OTA low` warning) so unsaved art is not
+stranded, while the OTA server stays stopped until space is freed.
+
+The version 2 config blob is 56 B on flash (12 B header + 44 B payload), up
+from 40 B; both load and save use a 56 B stack buffer. Version 1 files still
+decode, so existing calibration survives the upgrade. The diagnostics screen
+reuses `StorageStats` and the gallery refresh; `PaintFileIndex` adds one small
+counter for files beyond the 32-entry index cap, and opening Storage does not
+rescan the directory.
+
+### M7 Wi-Fi + OTA (M7-1–M7-8)
+
+Linking `WiFi`, lwIP, mDNS and `ArduinoOTA` adds a fixed wireless footprint.
+The M7 builds are:
+
+| Environment | RAM | Flash |
+|---|---:|---:|
+| `pico2w_usb` | 164,640 B (31.4%) | 499,460 B (23.9%)¹ |
+| `pico2w_ota` | 164,640 B (31.4%) | 499,460 B (23.9%)¹ |
+| `pico2w_diag` | 164,740 B (31.4%) | 500,748 B (23.9%)¹ |
+
+¹ Measured with the local populated `secrets.h`; without credentials the same
+sources build about 104–112 B smaller.
+
+That is +3,236 B of static RAM and about +56 KB of flash over the M6-9
+`pico2w_usb` build. Most of the RAM is not allocated by the app: the arduino-pico
+lwIP configuration reserves a **16,403 B** `ram_heap` and a **36,771 B** PBUF
+pool at link time. Those pools are already included in the table, so they are
+not a second 53 KB runtime allocation (the framework baseline and M6 figure
+already carried most of this static footprint; do not add the pools twice).
+The CYW43 driver may still allocate a small amount from the remaining heap for
+control structures and mDNS strings.
+
+The post-M7 free-heap estimate is:
+
+```
+524,288 - 164,640 (static) - 307,200 (framebuffer) - 20,480 (scratch)
+= 31,968 B
+```
+
+This is above the 24 KB target but tighter than M6. The boot log prints
+`[mem] free heap before net` and `[mem] free heap`; those values, plus the heap
+after Wi-Fi association, must be recorded on hardware (M7-9–M7-11). If they are
+too close to the limit, the first options are trimming the overlay scratch band
+or lowering the lwIP pool size, not removing the undo pool.
+
+The Network screen and OTA overlay add no framebuffer-sized buffer. `NetInfo`
+is a small status struct and the UI repaints only changed rows:
+
+- a status/toggle change dirties the `320×320` information area plus the button
+  (about 93 ms at the measured full-screen rate);
+- the once-per-second RSSI update dirties one `320×28` row (about 8 ms);
+- storage updates dirty one `320×28` reserve row;
+- entering the screen is a normal full-screen transition.
+
+The overlay panel is `280×144` (about 36 ms per changed progress percent), and
+`setOtaProgress()` ignores callbacks that do not change the integer percent.
+`beginOta()` closes any open sheet. Outside the splash and boot-recovery
+screens, the OTA start path switches to the canvas without composing the canvas
+layer (which would replace the drawing with paper), then flushes the live top
+bar and preserved canvas pixels. The boot screens keep their prompt visible
+under the overlay so a failed transfer cannot discard it. Each
+progress update composes the opaque panel over the canvas, flushes it, and
+restores the covered framebuffer pixels, so a failed update leaves the drawing
+intact. `onProgress` does this while `ArduinoOTA.handle()` blocks the normal
+loop. On success the reboot follows; on failure the main loop restores the
+canvas and shows a toast through the same overlay-safe path. Authentication
+errors can be reported from the lwIP context, so `onOtaError` only sets a flag
+and all display access remains in the main loop.
+
+The native suite passes **70/70**, including the Network-screen toggle,
+disabled-without-credentials, connected-request and low-storage paths. The
+wireless failure paths and ten-update loop still require hardware.
+
+### M8 settings, idle and recovery
+
+M8 adds no framebuffer-sized or per-frame allocation. The current builds are:
+
+| Environment | RAM | Flash |
+|---|---:|---:|
+| `pico2w_usb` | 164,692 B (31.4%) | 505,940 B (24.2%) |
+| `pico2w_ota` | 164,692 B (31.4%) | 505,940 B (24.2%) |
+| `pico2w_diag` | 164,792 B (31.4%) | 507,204 B (24.2%) |
+
+This is +52 B of static RAM and about +6.5 KB of flash over M7. The free-heap
+estimate is:
+
+```
+524,288 - 164,692 (static) - 307,200 (framebuffer) - 20,480 (scratch)
+= 31,916 B
+```
+
+The new state is small: the Settings UI keeps the current rotation, brightness
+and pressed-button flags; `IdleController` is a timestamp plus an enum; the
+boot-health blob is **8 B** on flash (`'P','B'`, version, count, CRC32) and is
+written once per boot plus one clear after five healthy seconds. The recovery
+screen, display test and touch test are normal UI compositions, not extra
+buffers.
+
+The Settings screen is now a full-screen compose with text-labelled rows; the
+44 px target changes do not add per-frame work. Changing rotation while a
+placeholder screen is open recomposes the 320×480 screen once because the
+framebuffer would otherwise contain the old orientation. On the canvas,
+rotation simply re-flushes the existing canvas framebuffer. Idle dim/off only
+calls `setBacklight()`, so it costs no SPI payload; the first press while off
+is swallowed to prevent accidental activation.
+
+The native suite is now **75/75**. New coverage includes orientation mapping,
+idle dim/off/wake thresholds, boot-health encode/decode/CRC/threshold, the
+Settings rotation/brightness/Wi-Fi/About/Storage/Network/Calibrate navigation
+and requests, the safe-mode display/touch/storage/Continue/Restart flow, and
+44 px primary-target checks. Hardware validation of rotation, idle wake,
+persistence, recovery entry and the self-tests remains pending.
+
+### M6 storage foundation (M6-1–M6-3)
+
+The CRC32/RLE codec, `.pnt` format and atomic-save path are now called from
+the UI. The design deliberately avoids a framebuffer-sized save buffer:
+
+- saves stream RLE in 512-pixel row chunks through a 256 B write buffer and
+  patch the header lengths/CRC32 afterwards with `seek`;
+- the raw 64×86 thumbnail is emitted one 128 B row at a time;
+- loads verify the header, file size and CRC32 with a 512 B buffer, then walk
+  the RLE stream a second time to fill the canvas (still 512 B);
+- the worst-case 320×432 file is about 288 KB (two bytes per pixel + a token
+  per row, plus the 11,008 B thumbnail and 32 B header); a blank canvas is
+  dominated by the thumbnail.
+
+CRC32 is a bitwise implementation, trading a small amount of save time for no
+1 KB lookup table in flash. The save/load, gallery, autosave recovery, storage
+gauge, config migration and diagnostics flows were hardware-validated after
+the M6 build. Instrumented save/load timing and the long-term flash-wear soak
+remain follow-ups.
 
 The 320×480 RGB565 framebuffer is allocated from the heap at boot
 (307,200 B), and the overlay scratch is a 320×32 band (20,480 B). The M4
@@ -55,9 +258,10 @@ The M4 undo pool costs about 64 KB of static RAM:
 |---|---:|
 | 44 RLE tile records × 1,024 | 45,056 |
 | 7 raw tile records × 2,048 | 14,336 |
-| Records, actions, refs, scratch | ≈ 4,700 |
+| Records, actions, refs, scratch | ≈ 6,000 |
 
-The pool holds up to 16 actions and 32 tile records per action. Each action
+The pool holds up to 16 actions and 51 tile records per action (one action may
+use the whole pool; older actions are evicted as needed). Each action
 captures the "before" pixels of the tiles it touches (RLE when compressible),
 then converts them to XOR deltas at commit. Undo/redo XOR the same delta, so
 one record serves both directions. The oldest action is evicted when either
@@ -129,7 +333,7 @@ adds the 320×32 scratch band for opaque overlays:
 | Top-bar press/release | one 44×44 button | **1.85–1.98 ms** |
 | Settings "Calibrate touch" | 280×44 button | **11.2 ms** |
 | Toast show/expire | 288×36 toast | **9.4–9.5 ms** |
-| Tools sheet open/close | 44×44 button + 320×180 sheet | 52.3 ms sheet, **≈54 ms total** |
+| Tools sheet open/close (M3, 320×180) | 44×44 button + 320×180 sheet | 52.3 ms sheet, **≈54 ms total**; the M5 options row makes the sheet 320×220, so expect ~64 ms until re-measured |
 | Palette sheet open/close | 44×44 button + 320×220 sheet | 63.9 ms sheet, **≈66 ms total** |
 | Size sheet open/close | 44×44 button + 320×120 sheet | 34.9 ms sheet, **≈37 ms total** |
 | Menu sheet open/close | 44×44 button + 320×340 sheet | 98.7 ms sheet, **≈101 ms total** |
@@ -196,15 +400,16 @@ There is no per-stroke heap growth: the undo pool is fixed in the object.
 | Stroke-to-pixel latency | **<1 ms** first flush, plus up to 10 ms touch poll | target <40 ms ✅ |
 | Five 24 px dots | 5 actions, **11 tile records, 1,372 B** | compressed undo |
 | Undo of a dot | **2.1–3.1 ms** canvas flush | |
-| Long 1 px stroke (3.9 s) | **31 records, 4,560 B** | just below the 32-tile action cap |
-| Long 8 px and 24 px squiggles (3.5–4.2 s) | exceeded 32 tiles → **"Stroke too large to undo"** | follow-up M4-11 |
+| Long 1 px stroke (3.9 s) | **31 records, 4,560 B** | now well below the 51-tile cap |
+| Long 8 px and 24 px squiggles (3.5–4.2 s) | exceeded the old 32-tile cap → **"Stroke too large to undo"** | fixed in code; re-measure on hardware |
 
 The 8 px and 24 px squiggles were deliberate long strokes across a large area;
-they hit the per-action cap of 32 tile records and were correctly rejected
-rather than corrupting history. Shorter strokes and dots commit normally. This
-is the main M4 usability follow-up: a normal multi-second squiggle can exceed
-the cap. The native suite still verifies ten compressed actions across 40 tile
-records.
+they hit the old per-action cap of 32 tile records and were correctly rejected
+rather than corrupting history. M4-11 raises the cap to the full 51-record
+pool, and the native suite now covers a 40-tile action plus the 52-tile
+overflow path. A hardware re-run is still needed to confirm the 4.2 s 24 px
+squiggle now fits; if it touches all 51 tiles it can still overflow, but a
+single action may now consume the whole pool instead of being refused at 32.
 
 ### Overlays and UI flushes
 
@@ -226,23 +431,50 @@ records.
 
 The HSV hue tap breaks down as: S/V square **58.4 ms**, H/S/V readout
 **20.7 ms**, hue bar **12.9 ms**, preview **10.8 ms**. The S/V tap is similar:
-square **58.8 ms**, readout **20.5 ms**, preview **11.0 ms**. The square is the
-dominant cost because the overlay band path re-enters the 64×48-cell painter
-for each band and the flush itself is a 216×156 RGB666 transfer. Dirtying only
-the affected controls works, but the 90–103 ms tap latency is still above the
-50 ms UI target.
+square **58.8 ms**, readout **20.5 ms**, preview **11.0 ms**. The square was the
+dominant cost because the overlay band path re-entered the old 64×48-cell painter
+for each band and the flush itself is a 216×156 RGB666 transfer.
+
+M4-12 changes the repaint set and the painter:
+
+- the S/V square is now 32×32 cells (half the `fillRect` calls);
+- an S/V tap dirties only the 21×21 old/new marker bounds, preview and readout
+  (~16k pixels) instead of the whole 216×156 square (~49k pixels);
+- a hue tap dirties the square (its colours change), but only 7×30 bounds
+  around the old and new hue markers instead of the full 280×30 bar;
+- both painters skip rows/columns outside the clip.
+
+A hue tap now asks for ~50k pixels of SPI payload instead of ~58k, and an S/V
+tap for ~16k instead of ~49k. The S/V tap should be well under 50 ms; the hue
+tap is close to the payload limit and still needs a hardware re-measurement.
+Opening the 320×370 HSV sheet remains a full-sheet flush (~179 ms) and is not
+addressed by M4-12.
 
 The full-screen Gallery transition is **172.9 ms** on the overlay-band path,
 versus **141.5 ms** for the return to the canvas. The canvas is preserved, but
 the per-band compose adds overhead to full-screen overlays.
 
-**Follow-ups:** M4-11 covers long-stroke undo capacity; M4-12 covers HSV
-repaint latency. Both are tracked in `BACKLOG.md`.
+M4-11 and M4-12 are implemented; the hardware numbers above are the pre-change
+baseline. Re-flash `pico2w_diag` and repeat the long-stroke and HSV taps to
+record the new values.
 
-The deterministic parts are covered by `pio test -e native` (40/40): canvas
+The deterministic parts are covered by `pio test -e native` (75/75): canvas
 clipping and dirty tracking, brush continuity, eraser/cancel, compressed and
-raw undo deltas, ten-action retention across 40 tile records, HSV conversion,
-HSV tap dirty bounds, New-canvas confirmation and undo/redo request handling.
+raw undo deltas, ten-action retention across 40 tile records, a 40-tile
+single action and overflow, filled shape commit/undo, HSV conversion, HSV tap
+dirty bounds (including marker-only squares), tool options, canvas clamping,
+New-canvas confirmation, undo/redo request handling, CRC32 known vectors and
+incremental chaining, RLE worst-case/corrupt streams, a pixel-identical `.pnt`
+round-trip with thumbnail/header/CRC rejection tests, paint-file name/path
+helpers and autosave naming, the seven-row menu, Save/Save-as requests, the
+gallery load/delete/paging/empty-state flows, the Storage details screen, the
+15 s autosave schedule (including wraparound and non-postponing changes), the
+storage used/free calculation and the 700 KB OTA-reserve boundary, the v2
+config round-trip, v1 migration, invalid/autosave last-opened rejection, the
+modal boot recovery Restore/Discard flows, the Network-screen toggle
+(disabled without credentials, connected request and low-storage refusal),
+orientation mapping, idle dim/off/wake, boot-health codec/threshold, the M8
+Settings controls, the safe-mode self-tests and 44 px accessibility targets.
 
 The overlay path was introduced in M4. Sheets, toasts, Settings, Gallery and
 calibration compose into a 320-pixel-wide, 32-row scratch band, flush that
@@ -250,9 +482,9 @@ band, then restore the canvas pixels underneath. The cost is roughly the same
 SPI payload as a normal dirty rectangle plus the compose work, but the canvas
 is never destroyed. The HSV sheet is the largest new overlay
 (320×370) and should be measured first on hardware. HSV taps dirty only the
-hue paint bounds, the S/V square plus marker, the preview and the readout; the
-square/hue painters skip cells outside the clip, so an adjustment does not
-re-flush the entire sheet.
+moving marker bounds for S/V, the square plus marker bounds for hue, the
+preview and the readout; the square/hue painters skip cells outside the clip,
+so an adjustment does not re-flush the entire sheet.
 
 ## Other targets
 

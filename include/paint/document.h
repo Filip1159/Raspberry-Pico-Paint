@@ -1,6 +1,6 @@
 #pragma once
 
-// Document metadata and save/load orchestration (implementation lands in M6).
+// Document metadata returned by the .pnt loader (format implemented in M6-2).
 
 #include <cstdint>
 

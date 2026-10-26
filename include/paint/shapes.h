@@ -4,6 +4,7 @@
 // rubber-band preview for dragged shapes. Header-only and Arduino-free so the
 // native tests exercise the same code that runs on the Pico.
 
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -127,6 +128,64 @@ void rasterShape(ShapeKind kind, Point a, Point b, Plot&& plot) {
   }
 }
 
+// Rasterise a shape as horizontal spans rather than individual pixels. Filled
+// rectangles and ellipses use one span per row; a line degenerates to 1 px
+// spans. Spans keep flood-fill-style undo capture efficient because whole rows
+// share the same tile set.
+template <typename Span>
+void rasterFilledSpans(ShapeKind kind, Point a, Point b, Span&& span) {
+  const int x0 = a.x < b.x ? a.x : b.x;
+  const int x1 = a.x < b.x ? b.x : a.x;
+  const int y0 = a.y < b.y ? a.y : b.y;
+  const int y1 = a.y < b.y ? b.y : a.y;
+
+  if (kind == ShapeKind::Line) {
+    rasterLine(a, b, [&](int x, int y) { span(x, y, 1); });
+    return;
+  }
+  if (kind == ShapeKind::Rect) {
+    for (int y = y0; y <= y1; ++y) {
+      span(x0, y, x1 - x0 + 1);
+    }
+    return;
+  }
+
+  const float cx = (x0 + x1) * 0.5f;
+  const float cy = (y0 + y1) * 0.5f;
+  const float rx = (x1 - x0) * 0.5f;
+  const float ry = (y1 - y0) * 0.5f;
+  if (rx < 0.5f && ry < 0.5f) {
+    span(x0, y0, 1);
+    return;
+  }
+  if (ry < 0.5f) {
+    for (int y = y0; y <= y1; ++y) {
+      span(x0, y, x1 - x0 + 1);
+    }
+    return;
+  }
+
+  for (int y = y0; y <= y1; ++y) {
+    const float t = (static_cast<float>(y) - cy) / ry;
+    if (t < -1.0f || t > 1.0f) {
+      continue;
+    }
+    const float inside = 1.0f - t * t;
+    const float dx = inside <= 0.0f ? 0.0f : rx * std::sqrt(inside);
+    int left = static_cast<int>(std::ceil(cx - dx - 0.001f));
+    int right = static_cast<int>(std::floor(cx + dx + 0.001f));
+    if (left < x0) {
+      left = x0;
+    }
+    if (right > x1) {
+      right = x1;
+    }
+    if (right >= left) {
+      span(left, y, right - left + 1);
+    }
+  }
+}
+
 // Bounding box of a shape, padded by one pixel for outline and tail pixels.
 inline Rect shapeBounds(Point a, Point b) {
   const int x0 = a.x < b.x ? a.x : b.x;
@@ -141,10 +200,15 @@ inline Rect shapeBounds(Point a, Point b) {
 
 // Rubber-band preview. Saves the background pixels under the shape path, draws
 // the shape in the actual colour, and on update/cancel restores the saved
-// background. No XOR inversion — the preview shows the real colour from the start.
+// background. No XOR inversion — the preview shows the real colour from the
+// start.
+//
+// Filled shapes preview as an outline while dragging. Saving a full filled
+// region would need a second framebuffer; the outline still communicates the
+// final bounds, and commit fills the shape with one undoable action.
 class ShapePreview {
  public:
-  static constexpr int kMaxPixels = 2048;  // enough for max perimeter (2*(320+480))
+  static constexpr int kMaxPixels = 2048;  // max outline perimeter (2*(320+480))
 
   struct SavedPixel {
     int16_t x;
@@ -154,7 +218,9 @@ class ShapePreview {
 
   bool active() const { return active_; }
 
-  void update(Canvas& canvas, ShapeKind kind, Point a, Point b, uint16_t color) {
+  void update(Canvas& canvas, ShapeKind kind, Point a, Point b, uint16_t color,
+              bool filled = false) {
+    (void)filled;  // outline preview is used for both modes
     if (!canvas.ready()) {
       return;
     }
@@ -202,16 +268,33 @@ class ShapePreview {
   // Replaces any preview with the final shape and records it as one undo
   // action. The caller publishes the action with undo.commit().
   void commit(Canvas& canvas, UndoStack& undo, ShapeKind kind, Point a, Point b,
-              uint16_t color) {
+              uint16_t color, bool filled = false) {
     cancel(canvas);
     undo.beginAction();
-    shape_detail::rasterShape(kind, a, b, [&](int x, int y) {
-      if (!inBounds(canvas, x, y)) {
-        return;
-      }
-      undo.captureRect(canvas, Rect{static_cast<int16_t>(x), static_cast<int16_t>(y), 1, 1});
-      canvas.pixels()[y * canvas.stride() + x] = color;
-    });
+    if (filled) {
+      shape_detail::rasterFilledSpans(
+          kind, a, b, [&](int x, int y, int width) {
+            const Rect span = Rect{static_cast<int16_t>(x),
+                                   static_cast<int16_t>(y),
+                                   static_cast<int16_t>(width), 1}
+                                  .intersect(canvas.bounds());
+            if (span.empty()) {
+              return;
+            }
+            undo.captureRect(canvas, span);
+            canvas.fillRect(span, color);
+          });
+    } else {
+      shape_detail::rasterShape(kind, a, b, [&](int x, int y) {
+        if (!inBounds(canvas, x, y)) {
+          return;
+        }
+        undo.captureRect(
+            canvas,
+            Rect{static_cast<int16_t>(x), static_cast<int16_t>(y), 1, 1});
+        canvas.pixels()[y * canvas.stride() + x] = color;
+      });
+    }
     canvas.markDirty(shape_detail::shapeBounds(a, b));
   }
 
